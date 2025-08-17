@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /tools/windows/
+cd /g3tools/windows/
 # Lista de herramientas (URL ARCHIVO)
 tools=(
   "https://raw.githubusercontent.com/peass-ng/PEASS-ng/master/winPEAS/winPEASps1/winPEAS.ps1 winPEAS.ps1"
