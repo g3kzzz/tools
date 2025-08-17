@@ -1,5 +1,5 @@
 #!/bin/bash
-
+cd /tools/linux/
 # Lista de herramientas (URL ARCHIVO)
 tools=(
   "https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh linpeas.sh"
