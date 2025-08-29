@@ -8,7 +8,7 @@ CYAN='\033[1;36m'
 RESET='\033[0m'
 
 # Carpetas a crear
-DIRS=("recon" "exploit" "loot" "files")
+DIRS=("recon" "exploit" "loot")
 
 # Verifica si alguna carpeta ya existe
 for d in "${DIRS[@]}"; do
