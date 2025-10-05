@@ -1,80 +1,93 @@
 #!/usr/bin/env bash
-# parse_nmap_minimal.sh - Minimal Nmap output extractor
-# Usage: ./parse_nmap_minimal.sh <nmap_output_file>
+# aea.sh - extract ports from nmap -oG output, print 5 ports per row, copy first host ports to clipboard
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "Uso: $0 <archivo_nmap>"
+  echo "Usage: $0 <nmap_oG_file>"
   exit 1
 fi
 
 FILE="$1"
 if [[ ! -f "$FILE" ]]; then
-  echo "Archivo no encontrado: $FILE"
+  echo "File not found: $FILE"
   exit 1
 fi
 
-# Parse: for each "Nmap scan report for" host, collect open ports
-awk '
-/^Nmap scan report for[[:space:]]+/ { host = $NF; next }
-/\/(tcp|udp).*open/ {
-  split($1,p,"/")
-  port = p[1]
-  if (host=="") host="unknown"
-  if (ports[host] == "") ports[host]=port
-  else ports[host]=ports[host]","port
-}
-END {
-  # if no explicit "Nmap scan report for" found, try to collect IP from file
-  if (length(ports)==0) {
-    ip = ""
-    # attempt to get an IP and ports globally
-    # print first found ip and a comma list of open ports
-    while ((getline line < ARGV[1]) > 0) {
-      if (ip=="" && match(line, /([0-9]{1,3}\.){3}[0-9]{1,3}/)) {
-        ip = substr(line, RSTART, RLENGTH)
-      }
-      if (match(line, /([0-9]{1,5})\/(tcp|udp).*open/)) {
-        if (gsub(/.*$/, "", "") || 1) {} # no-op to keep busy
-        split(substr(line, RSTART, RLENGTH), a, "/")
-        if (ports[ip]=="") ports[ip]=a[1]
-        else ports[ip]=ports[ip]","a[1]
-      }
-    }
-    if (ip=="") exit
-    for (h in ports) {
-      print h "\t" ports[h]
-    }
-    exit
-  }
-  # print hosts in order of discovery if possible
-  for (h in ports) {
-    print h "\t" ports[h]
-  }
-}' "$FILE" > /tmp/.nmap_minimal.$$ || true
+TAB=$'\t'
+first_ports_raw=""
+found=false
 
-if [[ ! -s /tmp/.nmap_minimal.$$ ]]; then
-  echo "No se encontraron hosts ni puertos abiertos."
-  rm -f /tmp/.nmap_minimal.$$
+while IFS= read -r line; do
+  # Only process lines starting with "Host:"
+  if [[ $line =~ ^Host:[[:space:]]+([^[:space:]]+) ]]; then
+    host="${BASH_REMATCH[1]}"
+
+    # Extract "Ports: ..." field if it exists
+    ports_field="$(printf '%s' "$line" | sed -n 's/.*Ports: //p' || true)"
+    [[ -z "$ports_field" ]] && continue
+
+    # Get only port numbers that are 'open'
+    ports_raw="$(printf '%s' "$ports_field" | tr ',' '\n' | awk -F'/' '/\/open/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$1); print $1}' | awk '!seen[$0]++' | paste -sd, - || true)"
+    ports_raw="${ports_raw:-}"
+
+    # Display (if no open ports found)
+    if [[ -z "$ports_raw" ]]; then
+      ports_display="(none)"
+      echo "HOST:"
+      echo -e "${TAB}${host}"
+      echo
+      echo "PORTS:"
+      echo -e "${TAB}${ports_display}"
+      echo
+      found=true
+      continue
+    fi
+
+    # Prepare array of ports and print 5 per line
+    IFS=',' read -r -a arr <<< "$ports_raw"
+
+    echo "HOST:"
+    echo -e "${TAB}${host}"
+    echo
+    echo "PORTS:"
+    idx=0
+    total=${#arr[@]}
+    while [[ $idx -lt $total ]]; do
+      slice=("${arr[@]:idx:5}")
+      line=""
+      for p in "${slice[@]}"; do
+        if [[ -z "$line" ]]; then
+          line="$p"
+        else
+          line="$line, $p"
+        fi
+      done
+      echo -e "${TAB}${line}"
+      idx=$((idx + 5))
+    done
+    echo
+
+    found=true
+    # Save first host ports (no spaces) for clipboard
+    if [[ -z "$first_ports_raw" ]]; then
+      first_ports_raw="$ports_raw"
+    fi
+  fi
+done < "$FILE"
+
+if ! $found; then
+  echo "No hosts or open ports found."
   exit 0
 fi
 
-# Print minimal lines: HOST: <host>  PORTS: <csv>
-first_ports=""
-while IFS=$'\t' read -r host ports_csv; do
-  # normalize ports (remove possible duplicates & spaces)
-  ports_norm=$(echo "$ports_csv" | tr ',' '\n' | awk '!seen[$0]++' | tr '\n' ',' | sed 's/,$//')
-  echo "HOST: $host  PORTS: ${ports_norm:-(none)}"
-  if [[ -z "$first_ports" && "$ports_norm" != "" && "$ports_norm" != "(none)" ]]; then
-    first_ports="$ports_norm"
+# Copy first host ports to clipboard if possible
+if [[ -n "$first_ports_raw" ]]; then
+  if command -v xclip >/dev/null 2>&1; then
+    echo -n "$first_ports_raw" | xclip -selection clipboard
+    echo "Copied to clipboard!"
+  else
+    echo "xclip not installed. Ports not copied."
   fi
-done < /tmp/.nmap_minimal.$$
-
-# copy first host ports to clipboard if xclip present
-if command -v xclip >/dev/null 2>&1 && [[ -n "${first_ports}" ]]; then
-  echo -n "$first_ports" | xclip -selection clipboard
-  echo "Puertos del primer host copiados al portapapeles: $first_ports"
 fi
 
-rm -f /tmp/.nmap_minimal.$$
 exit 0
