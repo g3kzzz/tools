@@ -3,6 +3,25 @@
 # Usage: ./create_workspace.sh
 set -euo pipefail
 
+# --------------------
+# Config: author banner
+# --------------------
+AUTHOR="Made by: g3kzzz"
+CONTACT="Contact: fabian.huamani@ucsm.edu.pe"
+# Si quieres color, descomenta las dos siguientes líneas:
+# MAGENTA="\033[95m"
+# RESET="\033[0m"
+
+print_banner() {
+  # Con color:
+  # printf "${MAGENTA}%s\n%s${RESET}\n\n" "$AUTHOR" "$CONTACT"
+  # Sin color:
+  printf "%s\n%s\n\n" "$AUTHOR" "$CONTACT"
+}
+
+# Imprimir banner siempre al inicio
+print_banner
+
 DIRS=(recon exploit loot)
 
 # check for existing dirs
