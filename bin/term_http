@@ -353,6 +353,8 @@ def main():
     parser.add_argument("--cookies", help="Cookie file (key=value per line)")
     parser.add_argument("--interval", type=float, default=0.06, help="Polling interval in seconds (default: 0.06)")
     parser.add_argument("--user-agent", help="Custom HTTP User-Agent")
+    print("Made by: g3kzzz")
+    print("Contact: fabian.huamani@ucsm.edu.pe\n")
     args = parser.parse_args()
 
     sess = requests.Session()
