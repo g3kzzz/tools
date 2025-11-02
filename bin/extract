@@ -2,13 +2,45 @@
 # aea.sh - extract ports from nmap -oG output, print 5 ports per row, copy first host ports to clipboard
 set -euo pipefail
 
+# --------------------
+# Banner / author
+# --------------------
+AUTHOR="Made by: g3kzzz"
+CONTACT="Contact: fabian.huamani@ucsm.edu.pe"
+USE_COLOR=true
+
+BANNER_PRINTED=0
+
+_magenta() { printf '\033[95m%s\033[0m' "$1"; }
+_print_banner() {
+  if [[ $BANNER_PRINTED -eq 1 ]]; then
+    return
+  fi
+  if $USE_COLOR && [[ -t 1 ]]; then
+    _magenta "${AUTHOR}"; printf "\n"
+    _magenta "${CONTACT}"; printf "\n\n"
+  else
+    printf "%s\n%s\n\n" "$AUTHOR" "$CONTACT"
+  fi
+  BANNER_PRINTED=1
+}
+
+# Print banner once at start
+_print_banner
+
+# --------------------
+# Arg check
+# --------------------
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 <nmap_oG_file>"
+  # _print_banner will noop if already printed
+  _print_banner
+  echo "Usage: $(basename "$0") <nmap_oG_file>"
   exit 1
 fi
 
 FILE="$1"
 if [[ ! -f "$FILE" ]]; then
+  _print_banner
   echo "File not found: $FILE"
   exit 1
 fi
@@ -26,30 +58,28 @@ while IFS= read -r line; do
     ports_field="$(printf '%s' "$line" | sed -n 's/.*Ports: //p' || true)"
     [[ -z "$ports_field" ]] && continue
 
-    # Get only port numbers that are 'open'
-    ports_raw="$(printf '%s' "$ports_field" | tr ',' '\n' | awk -F'/' '/\/open/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$1); print $1}' | awk '!seen[$0]++' | paste -sd, - || true)"
+    # Get only port numbers that are 'open' (unique, comma-separated)
+    ports_raw="$(printf '%s' "$ports_field" \
+      | tr ',' '\n' \
+      | awk -F'/' '/\/open/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$1); print $1}' \
+      | awk '!seen[$0]++' \
+      | paste -sd, - || true)"
     ports_raw="${ports_raw:-}"
 
-    # Display (if no open ports found)
+    # Display host and ports
+    echo "HOST:"
+    echo -e "${TAB}${host}"
+    echo
+    echo "PORTS:"
     if [[ -z "$ports_raw" ]]; then
-      ports_display="(none)"
-      echo "HOST:"
-      echo -e "${TAB}${host}"
-      echo
-      echo "PORTS:"
-      echo -e "${TAB}${ports_display}"
+      echo -e "${TAB}(none)"
       echo
       found=true
       continue
     fi
 
-    # Prepare array of ports and print 5 per line
+    # Print 5 ports per line
     IFS=',' read -r -a arr <<< "$ports_raw"
-
-    echo "HOST:"
-    echo -e "${TAB}${host}"
-    echo
-    echo "PORTS:"
     idx=0
     total=${#arr[@]}
     while [[ $idx -lt $total ]]; do
@@ -84,10 +114,17 @@ fi
 if [[ -n "$first_ports_raw" ]]; then
   if command -v xclip >/dev/null 2>&1; then
     echo -n "$first_ports_raw" | xclip -selection clipboard
-    echo "Copied to clipboard!"
+    echo "Copied to clipboard (xclip)!"
+  elif command -v wl-copy >/dev/null 2>&1; then
+    echo -n "$first_ports_raw" | wl-copy
+    echo "Copied to clipboard (wl-copy)!"
+  elif command -v pbcopy >/dev/null 2>&1; then
+    echo -n "$first_ports_raw" | pbcopy
+    echo "Copied to clipboard (pbcopy)!"
   else
-    echo "xclip not installed. Ports not copied."
+    echo "No clipboard utility found (xclip/wl-copy/pbcopy). Ports not copied."
   fi
 fi
 
 exit 0
+
