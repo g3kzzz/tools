@@ -11,6 +11,7 @@ TOOLS=(
   "https://raw.githubusercontent.com/peass-ng/PEASS-ng/master/winPEAS/winPEASps1/winPEAS.ps1 winPEAS.ps1"
   "https://github.com/peass-ng/PEASS-ng/releases/latest/download/winPEASany_ofs.exe winPEASany_ofs.exe"
   "https://raw.githubusercontent.com/lukebaggett/dnscat2-powershell/refs/heads/master/dnscat2.ps1 dnscat2.ps1"
+  "https://raw.githubusercontent.com/puckiestyle/powershell/refs/heads/master/SharpHound.ps1 SharpHound.ps1"
 )
 
 _dl() {
