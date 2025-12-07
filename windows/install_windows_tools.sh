@@ -12,6 +12,7 @@ TOOLS=(
   "https://github.com/peass-ng/PEASS-ng/releases/latest/download/winPEASany_ofs.exe winPEASany_ofs.exe"
   "https://raw.githubusercontent.com/lukebaggett/dnscat2-powershell/refs/heads/master/dnscat2.ps1 dnscat2.ps1"
   "https://raw.githubusercontent.com/SpecterOps/BloodHound-Legacy/refs/heads/master/Collectors/SharpHound.ps1 SharpHound.ps1"
+  "https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/refs/heads/master/Recon/PowerView.ps1 PowerView.ps1"
 )
 
 _dl() {
