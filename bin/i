@@ -1,0 +1,53 @@
+#!/bin/bash
+
+# =====================================
+#   i — Interface IP helper
+#   VPN > Ethernet > WiFi
+# =====================================
+
+get_ip() {
+  ip -4 addr show "$1" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1
+}
+
+declare -A IPS
+ORDER=()
+
+# Detectar interfaces UP
+for iface in $(ip -o link show up | awk -F': ' '{print $2}'); do
+  ipaddr=$(get_ip "$iface")
+  [[ -n "$ipaddr" ]] || continue
+
+  IPS["$iface"]="$ipaddr"
+  ORDER+=("$iface")
+done
+
+# Mostrar todas las IPs encontradas
+for iface in "${ORDER[@]}"; do
+  printf "%-8s : %s\n" "$iface" "${IPS[$iface]}"
+done
+
+# Prioridad
+PRIORITY_IF=""
+
+for i in "${ORDER[@]}"; do
+  [[ "$i" =~ ^(tun|tap|wg) ]] && PRIORITY_IF="$i" && break
+done
+
+if [[ -z "$PRIORITY_IF" ]]; then
+  for i in "${ORDER[@]}"; do
+    [[ "$i" =~ ^(eth|en) ]] && PRIORITY_IF="$i" && break
+  done
+fi
+
+if [[ -z "$PRIORITY_IF" ]]; then
+  for i in "${ORDER[@]}"; do
+    [[ "$i" =~ ^(wlan|wl) ]] && PRIORITY_IF="$i" && break
+  done
+fi
+
+# Copiar IP prioritaria
+if [[ -n "$PRIORITY_IF" ]]; then
+  echo -n "${IPS[$PRIORITY_IF]}" | xclip -selection clipboard
+  notify-send "IP copiada" "${PRIORITY_IF}: ${IPS[$PRIORITY_IF]}"
+fi
+
