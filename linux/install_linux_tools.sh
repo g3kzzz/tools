@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# install_linux_tools.sh - quiet downloader + chisel builder
-# Creates /tools/linux/chisel if not exists and compiles chisel for multiple platforms
+# install_linux_tools.sh
+# Installs linux enum tools into /tools/linux
+# Compiles chisel into /tools/linux/chisel
 
 set -euo pipefail
 
 ####################################
-# GLOBALS
+# PATHS
 ####################################
+TOOLS_DIR="/tools/linux"
 CHISEL_DIR="/tools/linux/chisel"
 CHISEL_VERSION="v1.11.3"
 
@@ -17,15 +19,9 @@ _detect_distro() {
   if [[ -f /etc/os-release ]]; then
     . /etc/os-release
     case "$ID" in
-      kali|debian|ubuntu)
-        echo "apt"
-        ;;
-      arch)
-        echo "pacman"
-        ;;
-      *)
-        echo "unknown"
-        ;;
+      kali|debian|ubuntu) echo "apt" ;;
+      arch) echo "pacman" ;;
+      *) echo "unknown" ;;
     esac
   else
     echo "unknown"
@@ -33,12 +29,10 @@ _detect_distro() {
 }
 
 ####################################
-# INSTALL PACKAGES
+# INSTALL DEPS
 ####################################
 _install_deps() {
-  local pm="$1"
-
-  case "$pm" in
+  case "$1" in
     apt)
       sudo apt update -qq
       sudo apt install -y -qq git golang upx-ucl || true
@@ -47,47 +41,47 @@ _install_deps() {
       sudo pacman -Sy --noconfirm git go upx || true
       ;;
     *)
-      echo "[!] Unsupported distro. Install git & go manually."
+      echo "[!] Unknown distro – install git & go manually"
       ;;
   esac
 }
 
 ####################################
-# DOWNLOAD HELPER
+# DOWNLOADER
 ####################################
 _dl() {
-  local url="$1" out="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --retry 3 "$url" -o "$out"
+    curl -fsSL "$1" -o "$2"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$out" "$url"
+    wget -q -O "$2" "$1"
   else
     return 1
   fi
 }
 
 ####################################
-# PREPARE DIRECTORIES
+# PREPARE DIRS
 ####################################
-sudo mkdir -p "$CHISEL_DIR"
-sudo chown -R "$USER":"$USER" "$CHISEL_DIR"
-cd "$CHISEL_DIR"
+sudo mkdir -p "$TOOLS_DIR" "$CHISEL_DIR"
+sudo chown -R "$USER":"$USER" "$TOOLS_DIR"
 
 ####################################
-# INSTALL DEPENDENCIES
+# INSTALL DEPS
 ####################################
 PM="$(_detect_distro)"
 _install_deps "$PM"
 
 ####################################
-# INSTALL ENUM TOOLS (linpeas / lse)
+# INSTALL ENUM TOOLS (ROOT FOLDER)
 ####################################
-TOOLS=(
+cd "$TOOLS_DIR"
+
+ENUM_TOOLS=(
   "https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh linpeas.sh"
   "https://github.com/diego-treitos/linux-smart-enumeration/releases/latest/download/lse.sh lse.sh"
 )
 
-for entry in "${TOOLS[@]}"; do
+for entry in "${ENUM_TOOLS[@]}"; do
   url=$(awk '{print $1}' <<< "$entry")
   file=$(awk '{print $2}' <<< "$entry")
 
@@ -96,13 +90,15 @@ for entry in "${TOOLS[@]}"; do
 done
 
 ####################################
-# BUILD CHISEL
+# BUILD CHISEL (SUBFOLDER)
 ####################################
-if [[ ! -d chisel-src ]]; then
-  git clone -q https://github.com/jpillora/chisel.git chisel-src
+cd "$CHISEL_DIR"
+
+if [[ ! -d src ]]; then
+  git clone -q https://github.com/jpillora/chisel.git src
 fi
 
-cd chisel-src
+cd src
 git fetch -q --tags
 git checkout -q "$CHISEL_VERSION"
 
@@ -115,9 +111,9 @@ targets=(
   "windows 386"
 )
 
-for target in "${targets[@]}"; do
-  os=$(cut -d' ' -f1 <<< "$target")
-  arch=$(cut -d' ' -f2 <<< "$target")
+for t in "${targets[@]}"; do
+  os=${t%% *}
+  arch=${t##* }
 
   echo "[+] Compiling chisel $os/$arch"
 
@@ -127,18 +123,18 @@ for target in "${targets[@]}"; do
 done
 
 ####################################
-# OPTIONAL: UPX COMPRESS
+# OPTIONAL UPX
 ####################################
 if command -v upx >/dev/null 2>&1; then
   upx --best ../builds/chisel_* >/dev/null 2>&1 || true
 fi
 
 ####################################
-# FINALIZE
+# CLEANUP
 ####################################
 cd "$CHISEL_DIR"
-mv chisel-src/builds/* .
-rm -rf chisel-src
+mv builds/* .
+rm -rf src builds
 
-echo "[✓] Chisel compiled and installed in $CHISEL_DIR"
-echo "[✓] Linux helper tools installed."
+echo "[✓] Enum tools installed in $TOOLS_DIR"
+echo "[✓] Chisel compiled in $CHISEL_DIR"
