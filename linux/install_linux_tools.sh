@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # install_linux_tools.sh
 # Installs linux enum tools into /tools/linux
-# Compiles chisel into /tools/linux/chisel
+# Compiles CLEAN chisel binaries into /tools/linux/chisel
+# FAST_MODE=1 -> NO UPX (rápido, recomendado)
+# FAST_MODE=0 -> UPX (más pequeño, más lento al ejecutar)
 
 set -euo pipefail
 
 ####################################
-# PATHS
+# CONFIG
 ####################################
+FAST_MODE=1
 TOOLS_DIR="/tools/linux"
 CHISEL_DIR="/tools/linux/chisel"
 CHISEL_VERSION="v1.11.3"
@@ -35,10 +38,10 @@ _install_deps() {
   case "$1" in
     apt)
       sudo apt update -qq
-      sudo apt install -y -qq git golang upx-ucl || true
+      sudo apt install -y -qq git golang gzip upx-ucl || true
       ;;
     pacman)
-      sudo pacman -Sy --noconfirm git go upx || true
+      sudo pacman -Sy --noconfirm git go gzip upx || true
       ;;
     *)
       echo "[!] Unknown distro – install git & go manually"
@@ -72,7 +75,7 @@ PM="$(_detect_distro)"
 _install_deps "$PM"
 
 ####################################
-# INSTALL ENUM TOOLS (ROOT FOLDER)
+# INSTALL ENUM TOOLS (ROOT)
 ####################################
 cd "$TOOLS_DIR"
 
@@ -90,51 +93,46 @@ for entry in "${ENUM_TOOLS[@]}"; do
 done
 
 ####################################
-# BUILD CHISEL (SUBFOLDER)
+# BUILD CHISEL (TEMP)
 ####################################
 cd "$CHISEL_DIR"
+rm -rf src out
 
-if [[ ! -d src ]]; then
-  git clone -q https://github.com/jpillora/chisel.git src
-fi
-
+git clone -q https://github.com/jpillora/chisel.git src
 cd src
 git fetch -q --tags
 git checkout -q "$CHISEL_VERSION"
 
-mkdir -p ../builds
+mkdir -p ../out
 
-targets=(
-  "linux amd64"
-  "linux 386"
-  "windows amd64"
-  "windows 386"
-)
+build() {
+  GOOS=$1 GOARCH=$2 CGO_ENABLED=0 \
+    go build -ldflags="-s -w" -o "$3"
+}
 
-for t in "${targets[@]}"; do
-  os=${t%% *}
-  arch=${t##* }
+# PRINCIPALES
+build linux   amd64   ../out/chisel_linux_amd64_principal
+build windows amd64   ../out/chisel_windows_amd64_principal.exe
 
-  echo "[+] Compiling chisel $os/$arch"
-
-  GOOS=$os GOARCH=$arch CGO_ENABLED=0 \
-    go build -ldflags="-s -w" \
-    -o "../builds/chisel_${os}_${arch}$( [[ $os == windows ]] && echo .exe )"
-done
+# SECUNDARIOS
+build linux   386     ../out/chisel_linux_386_secundario
+build windows 386     ../out/chisel_windows_386_secundario.exe
 
 ####################################
-# OPTIONAL UPX
+# OPTIONAL UPX (LENTO AL EJECUTAR)
 ####################################
-if command -v upx >/dev/null 2>&1; then
-  upx --best ../builds/chisel_* >/dev/null 2>&1 || true
+if [[ "$FAST_MODE" -eq 0 ]] && command -v upx >/dev/null 2>&1; then
+  upx --best ../out/chisel_* >/dev/null 2>&1 || true
 fi
 
 ####################################
-# CLEANUP
+# FINAL CLEANUP
 ####################################
 cd "$CHISEL_DIR"
-mv builds/* .
-rm -rf src builds
+mv out/* .
+rm -rf src out
+
+chmod +x chisel_linux_* 2>/dev/null || true
 
 echo "[✓] Enum tools installed in $TOOLS_DIR"
-echo "[✓] Chisel compiled in $CHISEL_DIR"
+echo "[✓] Chisel ready in $CHISEL_DIR (FAST_MODE=$FAST_MODE)"
