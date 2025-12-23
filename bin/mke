@@ -21,14 +21,12 @@ done
 
 mkdir -p "${DIRS[@]}"
 
-touch notes.md
 touch loot/creds.txt
 
 BASE="$(realpath .)"
 
 echo "Workspace created at: $BASE"
 echo "Files:"
-echo "  - notes.md"
 echo "  - loot/creds.txt"
 echo "Folders:"
 for d in "${DIRS[@]}"; do
