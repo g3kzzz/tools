@@ -5,7 +5,7 @@ set -euo pipefail
 # --------------------
 # Banner / author
 # --------------------
-AUTHOR="Made by: g3kzzz"
+AUTHOR="Made by: envertex"
 CONTACT="Contact: fabian.huamani@ucsm.edu.pe"
 USE_COLOR=true
 

@@ -1,10 +1,4 @@
 #!/bin/bash
-
-# =====================================
-#   i — Interface IP helper
-#   VPN > Ethernet > WiFi
-# =====================================
-
 get_ip() {
   ip -4 addr show "$1" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1
 }

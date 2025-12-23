@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOG_INFO="[INFO]"
+LOG_DEBUG="[DEBUG]"
+LOG_ERROR="[ERROR]"
+
+die() {
+  echo "$LOG_ERROR $1" >&2
+  exit 1
+}
+
+log() {
+  echo "$1 $2"
+}
+
+[[ $# -lt 2 ]] && die "Usage: scred <user|string|file> <pass|string|file> [output.txt]"
+
+USER_INPUT="$1"
+PASS_INPUT="$2"
+OUT_FILE="${3:-loot/creds.txt}"
+
+sanitize() {
+  local val="$1"
+  if [[ "$val" == \'*\' && "$val" != *"'"*"'"* ]]; then
+    val="${val:1:-1}"
+  fi
+  echo "$val"
+}
+
+read_value() {
+  local input="$1"
+  local value
+  if [[ -f "$input" ]]; then
+    log "$LOG_DEBUG" "Reading from file: $input"
+    value="$(tr -d '\n' < "$input")"
+  else
+    value="$input"
+  fi
+  sanitize "$value"
+}
+
+USER="$(read_value "$USER_INPUT")"
+PASS="$(read_value "$PASS_INPUT")"
+
+[[ -z "$USER" || -z "$PASS" ]] && die "User or password empty"
+
+mkdir -p "$(dirname "$OUT_FILE")"
+
+log "$LOG_INFO" "Saving credential to $OUT_FILE"
+echo "${USER}:${PASS}" >> "$OUT_FILE"
+
+log "$LOG_INFO" "Credential stored successfully"

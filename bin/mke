@@ -1,30 +1,17 @@
 #!/usr/bin/env bash
-# create_workspace.sh - Minimal folder structure creator
-# Usage: ./create_workspace.sh
 set -euo pipefail
 
-# --------------------
-# Config: author banner
-# --------------------
-AUTHOR="Made by: g3kzzz"
+AUTHOR="Made by: envertex"
 CONTACT="Contact: fabian.huamani@ucsm.edu.pe"
-# Si quieres color, descomenta las dos siguientes líneas:
-# MAGENTA="\033[95m"
-# RESET="\033[0m"
 
 print_banner() {
-  # Con color:
-  # printf "${MAGENTA}%s\n%s${RESET}\n\n" "$AUTHOR" "$CONTACT"
-  # Sin color:
   printf "%s\n%s\n\n" "$AUTHOR" "$CONTACT"
 }
 
-# Imprimir banner siempre al inicio
 print_banner
 
 DIRS=(recon exploit loot)
 
-# check for existing dirs
 for d in "${DIRS[@]}"; do
   if [[ -d "$d" ]]; then
     echo "Folder exists: $d — aborting."
@@ -32,13 +19,18 @@ for d in "${DIRS[@]}"; do
   fi
 done
 
-# create dirs
 mkdir -p "${DIRS[@]}"
+
+touch notes.md
+touch loot/creds.txt
 
 BASE="$(realpath .)"
 
-# minimal output
-echo "Created folders at: $BASE"
+echo "Workspace created at: $BASE"
+echo "Files:"
+echo "  - notes.md"
+echo "  - loot/creds.txt"
+echo "Folders:"
 for d in "${DIRS[@]}"; do
   echo "  - $d/"
 done
