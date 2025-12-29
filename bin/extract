@@ -1,120 +1,73 @@
 #!/usr/bin/env bash
-# aea.sh - extract ports from nmap -oG output
-# Ports -> CLIPBOARD (Ctrl+V)  [SIN ESPACIOS]
-# IP    -> PRIMARY   (middle click) [PERSISTENTE / BLOQUEADO]
-set -euo pipefail
+# extractPorts - nmap .gnmap helper
+# Ports -> CLIPBOARD (SIN espacios)
+# IP    -> PRIMARY (bloqueado, persistente)
 
-# --------------------
-# Banner / author
-# --------------------
+set -uo pipefail   # ❗ quitamos -e (clave)
+
 AUTHOR="Made by: envertex_"
 CONTACT="Contact: fabian.huamani@ucsm.edu.pe"
-USE_COLOR=true
 
-BANNER_PRINTED=0
-
-_magenta() { printf '\033[95m%s\033[0m' "$1"; }
-_print_banner() {
-  [[ $BANNER_PRINTED -eq 1 ]] && return
-  if $USE_COLOR && [[ -t 1 ]]; then
-    _magenta "$AUTHOR"; printf "\n"
-    _magenta "$CONTACT"; printf "\n\n"
-  else
-    printf "%s\n%s\n\n" "$AUTHOR" "$CONTACT"
-  fi
-  BANNER_PRINTED=1
-}
-
-_print_banner
-
-# --------------------
-# Arg check
-# --------------------
-if [[ $# -ne 1 ]]; then
-  echo "Usage: $(basename "$0") <nmap_oG_file>"
-  exit 1
-fi
+echo "$AUTHOR"
+echo "$CONTACT"
+echo
 
 FILE="$1"
-if [[ ! -f "$FILE" ]]; then
-  echo "File not found: $FILE"
-  exit 1
-fi
+[[ -f "$FILE" ]] || { echo "File not found"; exit 1; }
 
-command -v xclip >/dev/null 2>&1 || {
-  echo "xclip is required (sudo pacman -S xclip)"
+command -v xclip >/dev/null || {
+  echo "xclip required"
   exit 1
 }
 
-TAB=$'\t'
-first_ports_raw=""
 first_host=""
+ports_clipboard=""
 found=false
 
-# --------------------
-# Parse nmap file
-# --------------------
 while IFS= read -r line; do
   [[ ! $line =~ ^Host:[[:space:]]+([^[:space:]]+) ]] && continue
   host="${BASH_REMATCH[1]}"
-
-  # Guardar SOLO la primera IP
   [[ -z "$first_host" ]] && first_host="$host"
 
   ports_field="$(sed -n 's/.*Ports: //p' <<< "$line")"
   [[ -z "$ports_field" ]] && continue
 
-  # PUERTOS LIMPIOS (SIN ESPACIOS) -> CLIPBOARD
-  ports_raw="$(tr ',' '\n' <<< "$ports_field" \
+  # === PUERTOS LIMPIOS (SIN ESPACIOS) ===
+  ports_clipboard="$(tr ',' '\n' <<< "$ports_field" \
     | awk -F'/' '/\/open/ {print $1}' \
     | awk '!seen[$0]++' \
     | paste -sd, -)"
 
   echo "HOST:"
-  echo -e "${TAB}${host}\n"
+  echo -e "\t$host\n"
   echo "PORTS:"
 
-  if [[ -z "$ports_raw" ]]; then
-    echo -e "${TAB}(none)\n"
-    found=true
-    continue
-  fi
-
-  # DISPLAY CON ESPACIOS (solo visual)
-  IFS=',' read -r -a arr <<< "$ports_raw"
+  # === DISPLAY CON ESPACIOS ===
+  IFS=',' read -ra arr <<< "$ports_clipboard"
   for ((i=0; i<${#arr[@]}; i+=5)); do
-    echo -e "${TAB}$(IFS=', '; echo "${arr[*]:i:5}")"
+    echo -e "\t$(IFS=', '; echo "${arr[*]:i:5}")"
   done
   echo
 
   found=true
-  [[ -z "$first_ports_raw" ]] && first_ports_raw="$ports_raw"
+  break   # SOLO primer host (intencional)
 
 done < "$FILE"
 
-if ! $found; then
-  echo "No hosts or open ports found."
-  exit 0
-fi
+$found || { echo "No open ports found"; exit 0; }
 
 # --------------------
-# Clipboard handling
+# CLIPBOARD
 # --------------------
 
-# Ports -> CLIPBOARD (Ctrl+V)
-if [[ -n "$first_ports_raw" ]]; then
-  printf "%s" "$first_ports_raw" | xclip -selection clipboard
-  echo "[+] Ports copied to CLIPBOARD (Ctrl+V): $first_ports_raw"
-fi
+# Ports -> CLIPBOARD (SIN espacios)
+printf "%s" "$ports_clipboard" | xclip -selection clipboard
+echo "[+] Ports copied to CLIPBOARD: $ports_clipboard"
 
-# IP -> PRIMARY (BLOQUEADO / PERSISTENTE)
-if [[ -n "$first_host" ]]; then
-  # matar locks previos
-  pkill -f "xclip -selection primary" 2>/dev/null || true
+# IP -> PRIMARY (LOCK REAL)
+pkill -f "xclip -selection primary" 2>/dev/null || true
+printf "%s" "$first_host" | \
+  xclip -selection primary -loops 100000 </dev/null >/dev/null 2>&1 &
 
-  printf "%s" "$first_host" | xclip -selection primary -loops 1 &
-  disown
-  echo "[+] IP locked in PRIMARY (middle click): $first_host"
-fi
-
-exit 0
+disown
+echo "[+] IP locked in PRIMARY: $first_host"
