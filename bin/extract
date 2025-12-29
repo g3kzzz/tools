@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # aea.sh - extract ports from nmap -oG output
-# Ports -> CLIPBOARD (Ctrl+V)
-# IP    -> PRIMARY   (middle click)
+# Ports -> CLIPBOARD (Ctrl+V)  [SIN ESPACIOS]
+# IP    -> PRIMARY   (middle click) [PERSISTENTE / BLOQUEADO]
 set -euo pipefail
 
 # --------------------
@@ -15,19 +15,16 @@ BANNER_PRINTED=0
 
 _magenta() { printf '\033[95m%s\033[0m' "$1"; }
 _print_banner() {
-  if [[ $BANNER_PRINTED -eq 1 ]]; then
-    return
-  fi
+  [[ $BANNER_PRINTED -eq 1 ]] && return
   if $USE_COLOR && [[ -t 1 ]]; then
-    _magenta "${AUTHOR}"; printf "\n"
-    _magenta "${CONTACT}"; printf "\n\n"
+    _magenta "$AUTHOR"; printf "\n"
+    _magenta "$CONTACT"; printf "\n\n"
   else
     printf "%s\n%s\n\n" "$AUTHOR" "$CONTACT"
   fi
   BANNER_PRINTED=1
 }
 
-# Print banner once
 _print_banner
 
 # --------------------
@@ -44,55 +41,55 @@ if [[ ! -f "$FILE" ]]; then
   exit 1
 fi
 
+command -v xclip >/dev/null 2>&1 || {
+  echo "xclip is required (sudo pacman -S xclip)"
+  exit 1
+}
+
 TAB=$'\t'
 first_ports_raw=""
 first_host=""
 found=false
 
 # --------------------
-# Parse file
+# Parse nmap file
 # --------------------
 while IFS= read -r line; do
-  if [[ $line =~ ^Host:[[:space:]]+([^[:space:]]+) ]]; then
-    host="${BASH_REMATCH[1]}"
+  [[ ! $line =~ ^Host:[[:space:]]+([^[:space:]]+) ]] && continue
+  host="${BASH_REMATCH[1]}"
 
-    # Save first host (IP)
-    if [[ -z "$first_host" ]]; then
-      first_host="$host"
-    fi
+  # Guardar SOLO la primera IP
+  [[ -z "$first_host" ]] && first_host="$host"
 
-    ports_field="$(printf '%s' "$line" | sed -n 's/.*Ports: //p' || true)"
-    [[ -z "$ports_field" ]] && continue
+  ports_field="$(sed -n 's/.*Ports: //p' <<< "$line")"
+  [[ -z "$ports_field" ]] && continue
 
-    ports_raw="$(printf '%s' "$ports_field" \
-      | tr ',' '\n' \
-      | awk -F'/' '/\/open/ {print $1}' \
-      | awk '!seen[$0]++' \
-      | paste -sd, - || true)"
+  # PUERTOS LIMPIOS (SIN ESPACIOS) -> CLIPBOARD
+  ports_raw="$(tr ',' '\n' <<< "$ports_field" \
+    | awk -F'/' '/\/open/ {print $1}' \
+    | awk '!seen[$0]++' \
+    | paste -sd, -)"
 
-    echo "HOST:"
-    echo -e "${TAB}${host}\n"
-    echo "PORTS:"
+  echo "HOST:"
+  echo -e "${TAB}${host}\n"
+  echo "PORTS:"
 
-    if [[ -z "$ports_raw" ]]; then
-      echo -e "${TAB}(none)\n"
-      found=true
-      continue
-    fi
-
-    IFS=',' read -r -a arr <<< "$ports_raw"
-    for ((i=0; i<${#arr[@]}; i+=5)); do
-      echo -e "${TAB}$(IFS=', '; echo "${arr[*]:i:5}")"
-    done
-    echo
-
+  if [[ -z "$ports_raw" ]]; then
+    echo -e "${TAB}(none)\n"
     found=true
-
-    # Save first host ports
-    if [[ -z "$first_ports_raw" ]]; then
-      first_ports_raw="$ports_raw"
-    fi
+    continue
   fi
+
+  # DISPLAY CON ESPACIOS (solo visual)
+  IFS=',' read -r -a arr <<< "$ports_raw"
+  for ((i=0; i<${#arr[@]}; i+=5)); do
+    echo -e "${TAB}$(IFS=', '; echo "${arr[*]:i:5}")"
+  done
+  echo
+
+  found=true
+  [[ -z "$first_ports_raw" ]] && first_ports_raw="$ports_raw"
+
 done < "$FILE"
 
 if ! $found; then
@@ -103,26 +100,21 @@ fi
 # --------------------
 # Clipboard handling
 # --------------------
-# Ports -> CLIPBOARD
+
+# Ports -> CLIPBOARD (Ctrl+V)
 if [[ -n "$first_ports_raw" ]]; then
-  if command -v xclip >/dev/null 2>&1; then
-    echo -n "$first_ports_raw" | xclip -selection clipboard
-    echo "[+] Ports copied to CLIPBOARD (Ctrl+V)"
-  elif command -v wl-copy >/dev/null 2>&1; then
-    echo -n "$first_ports_raw" | wl-copy
-    echo "[+] Ports copied to CLIPBOARD (Ctrl+V)"
-  fi
+  printf "%s" "$first_ports_raw" | xclip -selection clipboard
+  echo "[+] Ports copied to CLIPBOARD (Ctrl+V): $first_ports_raw"
 fi
 
-# IP -> PRIMARY
+# IP -> PRIMARY (BLOQUEADO / PERSISTENTE)
 if [[ -n "$first_host" ]]; then
-  if command -v xclip >/dev/null 2>&1; then
-    echo -n "$first_host" | xclip -selection primary
-    echo "[+] IP copied to PRIMARY (middle click)"
-  elif command -v wl-copy >/dev/null 2>&1; then
-    echo -n "$first_host" | wl-copy --primary
-    echo "[+] IP copied to PRIMARY (middle click)"
-  fi
+  # matar locks previos
+  pkill -f "xclip -selection primary" 2>/dev/null || true
+
+  printf "%s" "$first_host" | xclip -selection primary -loops 1 &
+  disown
+  echo "[+] IP locked in PRIMARY (middle click): $first_host"
 fi
 
 exit 0
