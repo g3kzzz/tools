@@ -1,76 +1,78 @@
 #!/usr/bin/env bash
 # extractPorts - nmap .gnmap helper
-# Ports -> CLIPBOARD (sin espacios)
-# IP    -> PRIMARY (REALMENTE BLOQUEADO)
+# Ports -> CLIPBOARD (Ctrl+V, sin espacios)
+# IP    -> PRIMARY (middle click, reinyectado)
 
-set -uo pipefail
+set -u
 
-AUTHOR="Made by: envertex"
+AUTHOR="Made by: envertex_"
 CONTACT="Contact: fabian.huamani@ucsm.edu.pe"
 
 echo "$AUTHOR"
 echo "$CONTACT"
 echo
 
-FILE="$1"
-[[ -f "$FILE" ]] || { echo "File not found"; exit 1; }
-command -v xclip >/dev/null || { echo "xclip required"; exit 1; }
+FILE="${1:-}"
+[[ -f "$FILE" ]] || { echo "Usage: extractPorts <nmap.gnmap>"; exit 1; }
 
-FIFO="/tmp/aea_primary_fifo"
+command -v xclip >/dev/null || {
+  echo "xclip is required (pacman -S xclip)"
+  exit 1
+}
 
 first_host=""
 ports_clipboard=""
-found=false
 
-# ---------------- Parse nmap ----------------
+# ---------------- Parse gnmap ----------------
 while IFS= read -r line; do
   [[ ! $line =~ ^Host:[[:space:]]+([^[:space:]]+) ]] && continue
-  host="${BASH_REMATCH[1]}"
-  [[ -z "$first_host" ]] && first_host="$host"
+  first_host="${BASH_REMATCH[1]}"
 
   ports_field="$(sed -n 's/.*Ports: //p' <<< "$line")"
   [[ -z "$ports_field" ]] && continue
 
-  ports_clipboard="$(tr ',' '\n' <<< "$ports_field" \
-    | awk -F'/' '/\/open/ {print $1}' \
-    | awk '!seen[$0]++' \
-    | paste -sd, - \
-    | tr -d ' ')"
+  # Ports LIMPIOS (clipboard)
+  ports_clipboard="$(
+    tr ',' '\n' <<< "$ports_field" |
+    awk -F'/' '/\/open/ {print $1}' |
+    awk '!seen[$0]++' |
+    paste -sd, - |
+    tr -d ' '
+  )"
 
+  # Display bonito
   echo "HOST:"
-  echo -e "\t$host\n"
+  echo -e "\t$first_host\n"
   echo "PORTS:"
   IFS=',' read -ra arr <<< "$ports_clipboard"
-  for ((i=0;i<${#arr[@]};i+=5)); do
+  for ((i=0; i<${#arr[@]}; i+=5)); do
     echo -e "\t$(IFS=', '; echo "${arr[*]:i:5}")"
   done
   echo
 
-  found=true
   break
 done < "$FILE"
 
-$found || { echo "No open ports found"; exit 0; }
+[[ -z "$first_host" || -z "$ports_clipboard" ]] && {
+  echo "No open ports found"
+  exit 0
+}
 
 # ---------------- Clipboard ----------------
 
 # Ports -> CLIPBOARD
 printf "%s" "$ports_clipboard" | xclip -selection clipboard
-echo "[+] Ports copied to CLIPBOARD: $ports_clipboard"
+echo "[+] Ports in CLIPBOARD (Ctrl+V): $ports_clipboard"
 
-# ---------------- PRIMARY LOCK (REAL) ----------------
-
-# limpiar locks previos
+# IP -> PRIMARY (reinjected)
 pkill -f "xclip -selection primary" 2>/dev/null || true
-rm -f "$FIFO"
-mkfifo "$FIFO"
 
-# mantener FIFO abierto (proceso zombie controlado)
-(cat "$FIFO" & ) >/dev/null 2>&1
-
-# escribir IP y fijar PRIMARY
-printf "%s" "$first_host" > "$FIFO"
-xclip -selection primary < "$FIFO" >/dev/null 2>&1 &
+(
+  while true; do
+    printf "%s" "$first_host" | xclip -selection primary
+    sleep 0.3
+  done
+) >/dev/null 2>&1 &
 
 disown
-echo "[+] IP REALLY locked in PRIMARY (middle click): $first_host"
+echo "[+] IP pinned to PRIMARY (middle click): $first_host"
