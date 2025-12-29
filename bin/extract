@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# aea.sh - nmap ports extractor
+# extractPorts - nmap .gnmap helper
 # Ports -> CLIPBOARD (sin espacios)
-# IP    -> PRIMARY (bloqueado / persistente)
+# IP    -> PRIMARY (REALMENTE BLOQUEADO)
+
 set -uo pipefail
 
 AUTHOR="Made by: envertex"
@@ -15,10 +16,13 @@ FILE="$1"
 [[ -f "$FILE" ]] || { echo "File not found"; exit 1; }
 command -v xclip >/dev/null || { echo "xclip required"; exit 1; }
 
+FIFO="/tmp/aea_primary_fifo"
+
 first_host=""
 ports_clipboard=""
 found=false
 
+# ---------------- Parse nmap ----------------
 while IFS= read -r line; do
   [[ ! $line =~ ^Host:[[:space:]]+([^[:space:]]+) ]] && continue
   host="${BASH_REMATCH[1]}"
@@ -27,14 +31,12 @@ while IFS= read -r line; do
   ports_field="$(sed -n 's/.*Ports: //p' <<< "$line")"
   [[ -z "$ports_field" ]] && continue
 
-  # PUERTOS LIMPIOS PARA CLIPBOARD
   ports_clipboard="$(tr ',' '\n' <<< "$ports_field" \
     | awk -F'/' '/\/open/ {print $1}' \
     | awk '!seen[$0]++' \
     | paste -sd, - \
     | tr -d ' ')"
 
-  # DISPLAY BONITO
   echo "HOST:"
   echo -e "\t$host\n"
   echo "PORTS:"
@@ -45,17 +47,30 @@ while IFS= read -r line; do
   echo
 
   found=true
-  break  # solo primer host
+  break
 done < "$FILE"
 
 $found || { echo "No open ports found"; exit 0; }
 
-# Copiar PUERTOS al CLIPBOARD (sin espacios)
-printf "%s" "$ports_clipboard" | xclip -selection clipboard
-echo "[+] Ports copied to CLIPBOARD (Ctrl+V): $ports_clipboard"
+# ---------------- Clipboard ----------------
 
-# Lockear IP en PRIMARY
+# Ports -> CLIPBOARD
+printf "%s" "$ports_clipboard" | xclip -selection clipboard
+echo "[+] Ports copied to CLIPBOARD: $ports_clipboard"
+
+# ---------------- PRIMARY LOCK (REAL) ----------------
+
+# limpiar locks previos
 pkill -f "xclip -selection primary" 2>/dev/null || true
-printf "%s" "$first_host" | xclip -selection primary -loops 100000 </dev/null >/dev/null 2>&1 &
+rm -f "$FIFO"
+mkfifo "$FIFO"
+
+# mantener FIFO abierto (proceso zombie controlado)
+(cat "$FIFO" & ) >/dev/null 2>&1
+
+# escribir IP y fijar PRIMARY
+printf "%s" "$first_host" > "$FIFO"
+xclip -selection primary < "$FIFO" >/dev/null 2>&1 &
+
 disown
-echo "[+] IP locked in PRIMARY (middle click): $first_host"
+echo "[+] IP REALLY locked in PRIMARY (middle click): $first_host"
