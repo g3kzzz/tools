@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# aea.sh - extract ports from nmap -oG output, print 5 ports per row, copy first host ports to clipboard
+# aea.sh - extract ports from nmap -oG output
+# Ports -> CLIPBOARD (Ctrl+V)
+# IP    -> PRIMARY   (middle click)
 set -euo pipefail
 
 # --------------------
@@ -25,80 +27,68 @@ _print_banner() {
   BANNER_PRINTED=1
 }
 
-# Print banner once at start
+# Print banner once
 _print_banner
 
 # --------------------
 # Arg check
 # --------------------
 if [[ $# -ne 1 ]]; then
-  # _print_banner will noop if already printed
-  _print_banner
   echo "Usage: $(basename "$0") <nmap_oG_file>"
   exit 1
 fi
 
 FILE="$1"
 if [[ ! -f "$FILE" ]]; then
-  _print_banner
   echo "File not found: $FILE"
   exit 1
 fi
 
 TAB=$'\t'
 first_ports_raw=""
+first_host=""
 found=false
 
+# --------------------
+# Parse file
+# --------------------
 while IFS= read -r line; do
-  # Only process lines starting with "Host:"
   if [[ $line =~ ^Host:[[:space:]]+([^[:space:]]+) ]]; then
     host="${BASH_REMATCH[1]}"
 
-    # Extract "Ports: ..." field if it exists
+    # Save first host (IP)
+    if [[ -z "$first_host" ]]; then
+      first_host="$host"
+    fi
+
     ports_field="$(printf '%s' "$line" | sed -n 's/.*Ports: //p' || true)"
     [[ -z "$ports_field" ]] && continue
 
-    # Get only port numbers that are 'open' (unique, comma-separated)
     ports_raw="$(printf '%s' "$ports_field" \
       | tr ',' '\n' \
-      | awk -F'/' '/\/open/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$1); print $1}' \
+      | awk -F'/' '/\/open/ {print $1}' \
       | awk '!seen[$0]++' \
       | paste -sd, - || true)"
-    ports_raw="${ports_raw:-}"
 
-    # Display host and ports
     echo "HOST:"
-    echo -e "${TAB}${host}"
-    echo
+    echo -e "${TAB}${host}\n"
     echo "PORTS:"
+
     if [[ -z "$ports_raw" ]]; then
-      echo -e "${TAB}(none)"
-      echo
+      echo -e "${TAB}(none)\n"
       found=true
       continue
     fi
 
-    # Print 5 ports per line
     IFS=',' read -r -a arr <<< "$ports_raw"
-    idx=0
-    total=${#arr[@]}
-    while [[ $idx -lt $total ]]; do
-      slice=("${arr[@]:idx:5}")
-      line=""
-      for p in "${slice[@]}"; do
-        if [[ -z "$line" ]]; then
-          line="$p"
-        else
-          line="$line, $p"
-        fi
-      done
-      echo -e "${TAB}${line}"
-      idx=$((idx + 5))
+    for ((i=0; i<${#arr[@]}; i+=5)); do
+      echo -e "${TAB}$(IFS=', '; echo "${arr[*]:i:5}")"
     done
     echo
 
     found=true
-    # Save first host ports (no spaces) for clipboard
+
+    # Save first host ports
     if [[ -z "$first_ports_raw" ]]; then
       first_ports_raw="$ports_raw"
     fi
@@ -110,21 +100,29 @@ if ! $found; then
   exit 0
 fi
 
-# Copy first host ports to clipboard if possible
+# --------------------
+# Clipboard handling
+# --------------------
+# Ports -> CLIPBOARD
 if [[ -n "$first_ports_raw" ]]; then
   if command -v xclip >/dev/null 2>&1; then
     echo -n "$first_ports_raw" | xclip -selection clipboard
-    echo "Copied to clipboard (xclip)!"
+    echo "[+] Ports copied to CLIPBOARD (Ctrl+V)"
   elif command -v wl-copy >/dev/null 2>&1; then
     echo -n "$first_ports_raw" | wl-copy
-    echo "Copied to clipboard (wl-copy)!"
-  elif command -v pbcopy >/dev/null 2>&1; then
-    echo -n "$first_ports_raw" | pbcopy
-    echo "Copied to clipboard (pbcopy)!"
-  else
-    echo "No clipboard utility found (xclip/wl-copy/pbcopy). Ports not copied."
+    echo "[+] Ports copied to CLIPBOARD (Ctrl+V)"
+  fi
+fi
+
+# IP -> PRIMARY
+if [[ -n "$first_host" ]]; then
+  if command -v xclip >/dev/null 2>&1; then
+    echo -n "$first_host" | xclip -selection primary
+    echo "[+] IP copied to PRIMARY (middle click)"
+  elif command -v wl-copy >/dev/null 2>&1; then
+    echo -n "$first_host" | wl-copy --primary
+    echo "[+] IP copied to PRIMARY (middle click)"
   fi
 fi
 
 exit 0
-
