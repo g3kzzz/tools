@@ -7,7 +7,7 @@ set -euo pipefail
 # --------------------
 # Banner / author
 # --------------------
-AUTHOR="Made by: envertex"
+AUTHOR="Made by: envertex_"
 CONTACT="Contact: fabian.huamani@ucsm.edu.pe"
 USE_COLOR=true
 
