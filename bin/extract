@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# extractPorts - nmap .gnmap helper
-# Ports -> CLIPBOARD (SIN espacios)
-# IP    -> PRIMARY (bloqueado, persistente)
+# aea.sh - nmap ports extractor
+# Ports -> CLIPBOARD (sin espacios)
+# IP    -> PRIMARY (bloqueado / persistente)
+set -uo pipefail
 
-set -uo pipefail   # ❗ quitamos -e (clave)
-
-AUTHOR="Made by: envertex_"
+AUTHOR="Made by: envertex"
 CONTACT="Contact: fabian.huamani@ucsm.edu.pe"
 
 echo "$AUTHOR"
@@ -14,11 +13,7 @@ echo
 
 FILE="$1"
 [[ -f "$FILE" ]] || { echo "File not found"; exit 1; }
-
-command -v xclip >/dev/null || {
-  echo "xclip required"
-  exit 1
-}
+command -v xclip >/dev/null || { echo "xclip required"; exit 1; }
 
 first_host=""
 ports_clipboard=""
@@ -32,42 +27,35 @@ while IFS= read -r line; do
   ports_field="$(sed -n 's/.*Ports: //p' <<< "$line")"
   [[ -z "$ports_field" ]] && continue
 
-  # === PUERTOS LIMPIOS (SIN ESPACIOS) ===
+  # PUERTOS LIMPIOS PARA CLIPBOARD
   ports_clipboard="$(tr ',' '\n' <<< "$ports_field" \
     | awk -F'/' '/\/open/ {print $1}' \
     | awk '!seen[$0]++' \
-    | paste -sd, -)"
+    | paste -sd, - \
+    | tr -d ' ')"
 
+  # DISPLAY BONITO
   echo "HOST:"
   echo -e "\t$host\n"
   echo "PORTS:"
-
-  # === DISPLAY CON ESPACIOS ===
   IFS=',' read -ra arr <<< "$ports_clipboard"
-  for ((i=0; i<${#arr[@]}; i+=5)); do
+  for ((i=0;i<${#arr[@]};i+=5)); do
     echo -e "\t$(IFS=', '; echo "${arr[*]:i:5}")"
   done
   echo
 
   found=true
-  break   # SOLO primer host (intencional)
-
+  break  # solo primer host
 done < "$FILE"
 
 $found || { echo "No open ports found"; exit 0; }
 
-# --------------------
-# CLIPBOARD
-# --------------------
-
-# Ports -> CLIPBOARD (SIN espacios)
+# Copiar PUERTOS al CLIPBOARD (sin espacios)
 printf "%s" "$ports_clipboard" | xclip -selection clipboard
-echo "[+] Ports copied to CLIPBOARD: $ports_clipboard"
+echo "[+] Ports copied to CLIPBOARD (Ctrl+V): $ports_clipboard"
 
-# IP -> PRIMARY (LOCK REAL)
+# Lockear IP en PRIMARY
 pkill -f "xclip -selection primary" 2>/dev/null || true
-printf "%s" "$first_host" | \
-  xclip -selection primary -loops 100000 </dev/null >/dev/null 2>&1 &
-
+printf "%s" "$first_host" | xclip -selection primary -loops 100000 </dev/null >/dev/null 2>&1 &
 disown
-echo "[+] IP locked in PRIMARY: $first_host"
+echo "[+] IP locked in PRIMARY (middle click): $first_host"
