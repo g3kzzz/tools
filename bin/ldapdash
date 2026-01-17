@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+import os
+import socket
+import webbrowser
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import re
+import urllib.request
+
+BASE_PORT = 33333
+OUTPUT_HTML = "dashboard.html"
+HTML_DIR = "."
+
+HTML_ORDER = [
+    "domain_users_by_group.html",
+    "domain_users.html",
+    "domain_groups.html",
+    "domain_computers.html",
+    "domain_computers_by_os.html",
+    "domain_policy.html",
+    "domain_trusts.html",
+]
+
+# ===== ARCHIVOS RAW A DESCARGAR =====
+RAW_FILES = {
+    "app.js": "https://raw.githubusercontent.com/envertex/ldapdash/refs/heads/main/app.js",
+    "style.css": "https://raw.githubusercontent.com/envertex/ldapdash/refs/heads/main/style.css",
+}
+
+# -------------------------------------------------
+def find_free_port(start):
+    port = start
+    while True:
+        with socket.socket() as s:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return port
+            port += 1
+
+# -------------------------------------------------
+def download_raw_files():
+    cwd = os.getcwd()
+
+    for fname, url in RAW_FILES.items():
+        dst = os.path.join(cwd, fname)
+
+        if os.path.exists(dst):
+            print(f"[=] {fname} ya existe, se omite")
+            continue
+
+        try:
+            print(f"[+] Descargando {fname}...")
+            urllib.request.urlretrieve(url, dst)
+            print(f"[✓] Guardado en {dst}")
+        except Exception as e:
+            print(f"[!] Error descargando {fname}: {e}")
+
+# -------------------------------------------------
+def extract_styles(html):
+    return re.findall(
+        r"<style[^>]*>(.*?)</style>",
+        html,
+        re.IGNORECASE | re.DOTALL
+    )
+
+def extract_body(html):
+    match = re.search(
+        r"<body[^>]*>(.*?)</body>",
+        html,
+        re.IGNORECASE | re.DOTALL
+    )
+    return match.group(1) if match else html
+
+# -------------------------------------------------
+def build_dashboard():
+    all_styles = []
+    sections = []
+    tabs = []
+
+    for fname in HTML_ORDER:
+        path = os.path.join(HTML_DIR, fname)
+        if not os.path.exists(path):
+            continue
+
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            raw = f.read()
+
+        styles = extract_styles(raw)
+        body = extract_body(raw)
+
+        all_styles.extend(styles)
+
+        tab_id = fname.replace(".html", "")
+        title = fname.replace("_", " ").replace(".html", "").title()
+
+        tabs.append(f'<button class="tab-btn" data-tab="{tab_id}">{title}</button>')
+
+        sections.append(f"""
+<section class="tab-section" id="{tab_id}">
+{body}
+</section>
+""")
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="style.css">
+
+<style>
+body {{
+    font-family: Verdana, Arial, sans-serif;
+}}
+header {{
+    background: #222;
+    color: white;
+    padding: 10px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}}
+#tabs {{
+    background: #333;
+    padding: 5px;
+}}
+.tab-btn {{
+    background: #555;
+    color: white;
+    border: none;
+    padding: 6px 10px;
+    cursor: pointer;
+}}
+.tab-btn:hover {{
+    background: #777;
+}}
+.tab-section {{
+    display: none;
+}}
+.tab-section.active {{
+    display: block;
+}}
+header input, header select, header button {{
+    padding: 4px;
+}}
+
+.hl-high {{
+    background-color: #ff9b00;
+}}
+</style>
+
+<!-- ESTILOS ORIGINALES LDAPDUMP -->
+<style>
+{''.join(all_styles)}
+</style>
+
+<script defer src="app.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {{
+    const buttons = document.querySelectorAll(".tab-btn");
+    const sections = document.querySelectorAll(".tab-section");
+
+    buttons.forEach(btn => {{
+        btn.addEventListener("click", () => {{
+            sections.forEach(s => s.classList.remove("active"));
+            document.getElementById(btn.dataset.tab).classList.add("active");
+        }});
+    }});
+
+    if (sections.length) sections[0].classList.add("active");
+}});
+</script>
+
+<title>LDAP Audit Dashboard</title>
+</head>
+
+<body>
+
+<header>
+    <strong>LDAP Domain Dump Dashboard</strong>
+    <input id="search" type="search" placeholder="Search...">
+    <select id="severity-select">
+        <option value="all">All</option>
+        <option value="high">Keywords</option>
+    </select>
+    <button id="clear-button">Clear</button>
+</header>
+
+<nav id="tabs">
+{''.join(tabs)}
+</nav>
+
+<main>
+{''.join(sections)}
+</main>
+
+</body>
+</html>
+"""
+
+# -------------------------------------------------
+class Handler(SimpleHTTPRequestHandler):
+    pass
+
+# -------------------------------------------------
+def main():
+    download_raw_files()   # 👈 DESCARGA app.js y style.css
+
+    html = build_dashboard()
+
+    with open(OUTPUT_HTML, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    port = find_free_port(BASE_PORT)
+    url = f"http://127.0.0.1:{port}/{OUTPUT_HTML}"
+
+    print(f"[+] Dashboard generado correctamente")
+    print(f"[+] {url}")
+
+    webbrowser.open(url)
+    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+
+if __name__ == "__main__":
+    main()
